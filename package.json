@@ -1,0 +1,28 @@
+{
+  "name": "redactpdfonline",
+  "version": "1.0.0",
+  "description": "",
+  "homepage": "https://github.com/DameonL/RedactPDFOnline#readme",
+  "bugs": {
+    "url": "https://github.com/DameonL/RedactPDFOnline/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DameonL/RedactPDFOnline.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "preact": "^10.28.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
+  }
+}
