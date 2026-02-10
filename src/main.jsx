@@ -1,5 +1,4 @@
 import { render } from 'preact'
-import './index.css'
-import Redactor from './redactor.jsx'
+import Redactor from './redactor.js'
 
 render(<Redactor />, document.getElementById('app'))

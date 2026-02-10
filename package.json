@@ -1,28 +1,30 @@
 {
   "name": "redactpdfonline",
-  "version": "1.0.0",
-  "description": "",
-  "homepage": "https://github.com/DameonL/RedactPDFOnline#readme",
-  "bugs": {
-    "url": "https://github.com/DameonL/RedactPDFOnline/issues"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/DameonL/RedactPDFOnline.git"
-  },
-  "license": "ISC",
-  "author": "",
-  "type": "commonjs",
-  "main": "index.js",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "vite",
+    "build": "vite build && copy-files-from-to",
+    "preview": "vite preview"
   },
   "dependencies": {
     "pdf-lib": "^1.17.1",
-    "preact": "^10.28.3"
+    "pdfjs-dist": "^5.4.624",
+    "preact": "^10.27.2"
   },
   "devDependencies": {
+    "@preact/preset-vite": "^2.10.2",
+    "@types/pdfjs-dist": "^2.10.377",
+    "copy-files-from-to": "^4.0.0",
     "typescript": "^5.9.3",
+    "typescript-plugin-css-modules": "^5.2.0",
     "vite": "^7.3.1"
-  }
+  },
+  "copyFiles": [
+    {
+      "from": "node_modules/pdfjs-dist/build/pdf.worker.min.mjs",
+      "to": "dist/assets/pdf.worker.min.mjs"
+    }
+  ]
 }
