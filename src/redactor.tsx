@@ -13,6 +13,7 @@ const Redactor = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderTaskRef = useRef<boolean>(false);
 
+  const [filename, setFilename] = useState<string>("Redacted Document.pdf");
   const [pdfDoc, setPdfDoc] = useState<PDFDocument | null>(null);
   const [pdfjsDoc, setPdfjsDoc] = useState<PDFDocumentProxy | null>(null);
   const [currentPageNum, setCurrentPageNum] = useState<number>(1);
@@ -84,6 +85,8 @@ const Redactor = () => {
   const handleFileChange = async (event: TargetedEvent<HTMLInputElement>) => {
     const file = event.currentTarget?.files?.[0];
     if (!file) return;
+
+    setFilename(file.name);
 
     const reader = new FileReader();
     reader.onload = async (e) => {
@@ -385,16 +388,21 @@ const Redactor = () => {
     return new Uint8Array(pdfBytes);
   };
 
+  const addRedactedToFilename = (filename: string) => {
+    var extensionIndex = filename.lastIndexOf(".");
+    var fileName = filename.substring(0, extensionIndex);
+    var extension = filename.substring(extensionIndex + 1);
+    return `${fileName} - Redacted.${extension}`;
+  }
+
   const handleDownload = async () => {
     if (!pdfBytes) return;
-    //    var rasterizedBytes = await rasterizePDF();
-    //    if (!rasterizedBytes) return;
 
     const blob = new Blob([new Uint8Array(pdfBytes)], { type: 'application/pdf' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'redacted_document.pdf';
+    a.download = addRedactedToFilename(filename);
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
