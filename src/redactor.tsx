@@ -1,4 +1,5 @@
-import { PDFContentStream, PDFDocument, PDFName, PDFNumber, PDFOperator, PDFRawStream, PDFStream, rgb } from 'pdf-lib';
+import pako from "pako";
+import { PDFArray, PDFContentStream, PDFDict, PDFDocument, PDFName, PDFNumber, PDFOperator, PDFOperatorNames, PDFRawStream, PDFRef, PDFStream, rgb } from 'pdf-lib';
 import * as pdfjsLib from "pdfjs-dist";
 import { h, type TargetedEvent, type TargetedMouseEvent } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
@@ -128,95 +129,212 @@ const Redactor = () => {
     }
   };
 
-  const stopDrawing = async () => {
-    if (!isDrawing || !pdfDoc || !currentRect || !pdfjsDoc) {
-      setIsDrawing(false);
-      return;
+  const surgicalStrip = (data: Uint8Array, targetText: string): Uint8Array => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const result = new Uint8Array(data);
+    const streamString = decoder.decode(data);
+
+    const hexUpper = Array.from(targetText).map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join('').toUpperCase();
+    const hexLower = hexUpper.toLowerCase();
+
+    const patterns = [
+      { search: encoder.encode(`<${hexUpper}>`), replace: encoder.encode(`<${"20".repeat(targetText.length)}>`) },
+      { search: encoder.encode(`<${hexLower}>`), replace: encoder.encode(`<${"20".repeat(targetText.length)}>`) },
+      { search: encoder.encode(`(${targetText})`), replace: encoder.encode(`(${" ".repeat(targetText.length)})`) }
+    ];
+
+    const btRegex = /BT\s/g;
+    const etRegex = /\sET/g;
+    let matchBT;
+
+    while ((matchBT = btRegex.exec(streamString)) !== null) {
+      etRegex.lastIndex = matchBT.index;
+      const matchET = etRegex.exec(streamString);
+      if (!matchET) continue;
+
+      const blockStart = matchBT.index;
+      const blockEnd = matchET.index + 3;
+
+      patterns.forEach(({ search, replace }) => {
+        for (let i = blockStart; i <= blockEnd - search.length; i++) {
+          let match = true;
+          for (let j = 0; j < search.length; j++) {
+            if (result[i + j] !== search[j]) { match = false; break; }
+          }
+          if (match) {
+            result.set(replace, i);
+            i += search.length - 1;
+          }
+        }
+      });
     }
+    return result;
+  };
+
+  const processStreamRecursively = (
+    pdfDoc: any,
+    streamRef: PDFRef,
+    textContent: any,
+    rX: number, rY: number, rW: number, rH: number
+  ) => {
+    const stream = pdfDoc.context.lookup(streamRef, PDFStream) as PDFRawStream;
+    if (!stream) return;
+
+    // 1. Decompress
+    let bytes = stream.contents;
+    const isCompressed = stream.dict.get(PDFName.of('Filter')) === PDFName.of('FlateDecode');
+    if (isCompressed) {
+      try { bytes = pako.inflate(bytes); } catch (e) { return; }
+    }
+
+    const streamString = new TextDecoder().decode(bytes);
+    let modified = false;
+
+    // 2. Check for nested XObjects (Forms)
+    const doRegex = /\/(\w+)\s+Do/g;
+    let match;
+    while ((match = doRegex.exec(streamString)) !== null) {
+      const objectName = match[1];
+      if (objectName == undefined) break;
+
+      // Look up XObject in the current stream's resources (if it has them)
+      const resources = stream.dict.lookupMaybe(PDFName.of('Resources'), PDFDict);
+      const xObjects = resources?.lookupMaybe(PDFName.of('XObject'), PDFDict);
+      const referencedRef = xObjects?.get(PDFName.of(objectName));
+
+      if (referencedRef instanceof PDFRef) {
+        const referencedStream = pdfDoc.context.lookup(referencedRef, PDFStream) as PDFRawStream;
+        if (referencedStream?.dict.get(PDFName.of('Subtype')) === PDFName.of('Form')) {
+          console.log(`Deep-diving into XObject: /${objectName}`);
+          processStreamRecursively(pdfDoc, referencedRef, textContent, rX, rY, rW, rH);
+        }
+      }
+    }
+
+    // 3. Strip Text in CURRENT stream
+    for (const item of textContent.items) {
+      if ('str' in item) {
+        const tx = item.transform[4];
+        const ty = item.transform[5];
+        // Note: This coordinate check assumes text coordinates map directly
+        // to the top-level page space. If not, complex CTM math is required.
+        if (tx >= rX && tx <= rX + rW && ty >= rY && ty <= rY + rH) {
+          if (item.str.trim().length > 0 && streamString.includes(item.str)) {
+            const newBytes = surgicalStrip(bytes, item.str);
+            if (newBytes !== bytes) {
+              bytes = newBytes;
+              modified = true;
+            }
+          }
+        }
+      }
+    }
+
+    // 4. Re-assign
+    if (modified) {
+      const literalDict: any = {};
+      stream.dict.entries().forEach(([k, v]) => {
+        if (k.asString() !== 'Filter') literalDict[k.asString()] = v;
+      });
+      const newStream = pdfDoc.context.flateStream(bytes, literalDict);
+      pdfDoc.context.assign(streamRef, newStream);
+    }
+  };
+
+
+  const stopDrawing = async () => {
+    if (!isDrawing || !pdfDoc || !currentRect || !pdfjsDoc) return;
     setIsDrawing(false);
 
-    const { x, y, width, height } = currentRect;
-    const rX = (width < 0 ? x + width : x) / renderScale;
-    const rW = Math.abs(width) / renderScale;
-    const rH = Math.abs(height) / renderScale;
+    const { x, y, width: rW_raw, height: rH_raw } = currentRect;
+    const pageProxy = await pdfjsDoc.getPage(currentPageNum);
+    const viewport = pageProxy.getViewport({ scale: 1.0 });
 
-    const pageForScale = await pdfjsDoc.getPage(currentPageNum);
-    const pdfPageHeight = pageForScale.getViewport({ scale: 1.0 }).height;
-    const rY = pdfPageHeight - ((height < 0 ? y + height : y) / renderScale) - rH;
+    const rX = (rW_raw < 0 ? x + rW_raw : x) / renderScale;
+    const rW = Math.abs(rW_raw) / renderScale;
+    const rH = Math.abs(rH_raw) / renderScale;
+    const rY = viewport.height - ((rH_raw < 0 ? y + rH_raw : y) / renderScale) - rH;
 
     try {
       const pdfPage = pdfDoc.getPage(currentPageNum - 1);
-      const contentsEntry = pdfPage.node.get(PDFName.of('Contents'));
-      if (!contentsEntry) return;
+      const textContent = await pageProxy.getTextContent();
 
-      const contentRefs = (contentsEntry as any).array || [contentsEntry];
+      const processStreamRecursively = (streamRef: PDFRef, resourcesDict?: PDFDict) => {
+        const stream = pdfDoc.context.lookup(streamRef, PDFStream) as PDFRawStream;
+        if (!stream) return;
 
-      for (const ref of contentRefs) {
-        const obj = pdfDoc.context.lookup(ref);
+        let bytes = stream.contents;
+        const filter = stream.dict.get(PDFName.of('Filter'));
+        const isCompressed = filter === PDFName.of('FlateDecode') || (Array.isArray(filter) && filter.includes(PDFName.of('FlateDecode')));
 
-        if (obj && (obj as any).getContents) {
-          const rawStream = obj as any;
-          const bytes = rawStream.getContents();
-
-          // 1. Force parsing to get operators
-          const tempStream = (PDFContentStream as any).of(rawStream.dict, bytes);
-          const operators = (tempStream as any).operators;
-
-          if (!Array.isArray(operators)) continue;
-
-          const filteredOperators = [];
-          let curX = 0;
-          let curY = 0;
-
-          for (const op of operators) {
-            const name = op.getOperator();
-            const args = op.getArguments();
-
-            if (name === 'Tm' && args.length >= 6) {
-              curX = (args[4] as any).asNumber();
-              curY = (args[5] as any).asNumber();
-            } else if ((name === 'Td' || name === 'TD') && args.length >= 2) {
-              curX += (args[0] as any).asNumber();
-              curY += (args[1] as any).asNumber();
-            }
-
-            if (['Tj', 'TJ', "'", '"'].includes(name)) {
-              const isInside = (curX >= rX && curX <= rX + rW && curY >= rY && curY <= rY + rH);
-              if (isInside) continue;
-            }
-            filteredOperators.push(op);
-          }
-
-          // 2. SANITIZE AND RE-COMPRESS
-          // We ensure the encoder is active to re-compress (Flate) the stream
-          const sanitizedStream = (PDFContentStream as any).of(
-            rawStream.dict,
-            filteredOperators,
-            true // Force encoding (compression)
-          );
-
-          pdfDoc.context.assign(ref, sanitizedStream);
+        if (isCompressed) {
+          try { bytes = pako.inflate(bytes); } catch (e) { return; }
         }
-      }
+
+        let modified = false;
+        const streamString = new TextDecoder().decode(bytes);
+        const streamResources = stream.dict.lookupMaybe(PDFName.of('Resources'), PDFDict) || resourcesDict;
+
+        const doRegex = /\/(\w+)\s+Do/g;
+        let match;
+        while ((match = doRegex.exec(streamString)) !== null) {
+          const objectName = match[1];
+          if (objectName === undefined) continue;
+          const xObjects = streamResources?.lookupMaybe(PDFName.of('XObject'), PDFDict);
+          const referencedRef = xObjects?.get(PDFName.of(objectName));
+          if (referencedRef instanceof PDFRef) {
+            const referencedStream = pdfDoc.context.lookup(referencedRef, PDFStream) as PDFRawStream;
+            if (referencedStream?.dict.get(PDFName.of('Subtype')) === PDFName.of('Form')) {
+              processStreamRecursively(referencedRef, streamResources);
+            }
+          }
+        }
+
+        for (const item of textContent.items) {
+          if ('str' in item) {
+            const tx = item.transform[4];
+            const ty = item.transform[5];
+            if (tx >= rX && tx <= rX + rW && ty >= rY && ty <= rY + rH) {
+              if (item.str.trim().length > 0) {
+                const newBytes = surgicalStrip(bytes, item.str);
+                if (newBytes.some((byte, idx) => byte !== bytes[idx])) {
+                  bytes = newBytes;
+                  modified = true;
+                }
+              }
+            }
+          }
+        }
+
+        if (modified) {
+          const compressedBytes = pako.deflate(bytes);
+          (stream as any).contents = compressedBytes;
+          stream.dict.set(PDFName.of('Filter'), PDFName.of('FlateDecode'));
+          stream.dict.set(PDFName.of('Length'), PDFNumber.of(compressedBytes.length));
+        }
+      };
+
+      const contentsEntry = pdfPage.node.get(PDFName.of('Contents'));
+      const contentRefs = contentsEntry instanceof PDFArray ? contentsEntry.asArray() : [contentsEntry];
+      const pageResources = pdfPage.node.lookupMaybe(PDFName.of('Resources'), PDFDict);
+
+      contentRefs.forEach(ref => {
+        if (ref instanceof PDFRef) processStreamRecursively(ref, pageResources);
+      });
 
       pdfPage.drawRectangle({
-        x: rX,
-        y: rY,
-        width: rW,
-        height: rH,
+        x: rX, y: rY, width: rW, height: rH,
         color: rgb(0, 0, 0),
       });
 
-      const savedBytes = await pdfDoc.save();
-      const freshBytes = new Uint8Array(savedBytes.buffer.slice(0));
-      setPdfBytes(freshBytes);
-
-      const nextPdfjs = await pdfjsLib.getDocument({ data: freshBytes.slice(0) }).promise;
+      const newBytes = await pdfDoc.save({ useObjectStreams: false });
+      setPdfBytes(newBytes);
+      const nextPdfjs = await pdfjsLib.getDocument({ data: newBytes.slice(0) }).promise;
       setPdfjsDoc(nextPdfjs);
       setCurrentRect(null);
-
-    } catch (error) {
-      console.error("Redaction Error:", error);
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -269,10 +387,10 @@ const Redactor = () => {
 
   const handleDownload = async () => {
     if (!pdfBytes) return;
-    var rasterizedBytes = await rasterizePDF();
-    if (!rasterizedBytes) return;
+    //    var rasterizedBytes = await rasterizePDF();
+    //    if (!rasterizedBytes) return;
 
-    const blob = new Blob([new Uint8Array(rasterizedBytes)], { type: 'application/pdf' });
+    const blob = new Blob([new Uint8Array(pdfBytes)], { type: 'application/pdf' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
