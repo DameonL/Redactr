@@ -132,119 +132,81 @@ const Redactor = () => {
     }
   };
 
-  const surgicalStrip = (data: Uint8Array, targetText: string): Uint8Array => {
-    const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
+  const surgicalStrip = (data: Uint8Array, item: any, rX: number, rY: number, rW: number, rH: number): Uint8Array => {
     const result = new Uint8Array(data);
+    const decoder = new TextDecoder();
     const streamString = decoder.decode(data);
 
-    const hexUpper = Array.from(targetText).map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join('').toUpperCase();
-    const hexLower = hexUpper.toLowerCase();
+    const itemX = item.transform[4];
+    const itemY = item.transform[5];
+    const itemWidth = item.width;
+    const charWidth = itemWidth / item.str.length;
 
-    const patterns = [
-      { search: encoder.encode(`<${hexUpper}>`), replace: encoder.encode(`<${"20".repeat(targetText.length)}>`) },
-      { search: encoder.encode(`<${hexLower}>`), replace: encoder.encode(`<${"20".repeat(targetText.length)}>`) },
-      { search: encoder.encode(`(${targetText})`), replace: encoder.encode(`(${" ".repeat(targetText.length)})`) }
-    ];
-
-    const btRegex = /BT\s/g;
-    const etRegex = /\sET/g;
-    let matchBT;
-
-    while ((matchBT = btRegex.exec(streamString)) !== null) {
-      etRegex.lastIndex = matchBT.index;
-      const matchET = etRegex.exec(streamString);
-      if (!matchET) continue;
-
-      const blockStart = matchBT.index;
-      const blockEnd = matchET.index + 3;
-
-      patterns.forEach(({ search, replace }) => {
-        for (let i = blockStart; i <= blockEnd - search.length; i++) {
-          let match = true;
-          for (let j = 0; j < search.length; j++) {
-            if (result[i + j] !== search[j]) { match = false; break; }
-          }
-          if (match) {
-            result.set(replace, i);
-            i += search.length - 1;
-          }
-        }
-      });
-    }
-    return result;
-  };
-
-  const processStreamRecursively = (
-    pdfDoc: any,
-    streamRef: PDFRef,
-    textContent: any,
-    rX: number, rY: number, rW: number, rH: number
-  ) => {
-    const stream = pdfDoc.context.lookup(streamRef, PDFStream) as PDFRawStream;
-    if (!stream) return;
-
-    // 1. Decompress
-    let bytes = stream.contents;
-    const isCompressed = stream.dict.get(PDFName.of('Filter')) === PDFName.of('FlateDecode');
-    if (isCompressed) {
-      try { bytes = pako.inflate(bytes); } catch (e) { return; }
-    }
-
-    const streamString = new TextDecoder().decode(bytes);
-    let modified = false;
-
-    // 2. Check for nested XObjects (Forms)
-    const doRegex = /\/(\w+)\s+Do/g;
+    const btRegex = /BT\s([\s\S]*?)\sET/g;
     let match;
-    while ((match = doRegex.exec(streamString)) !== null) {
-      const objectName = match[1];
-      if (objectName == undefined) break;
 
-      // Look up XObject in the current stream's resources (if it has them)
-      const resources = stream.dict.lookupMaybe(PDFName.of('Resources'), PDFDict);
-      const xObjects = resources?.lookupMaybe(PDFName.of('XObject'), PDFDict);
-      const referencedRef = xObjects?.get(PDFName.of(objectName));
+    while ((match = btRegex.exec(streamString)) !== null) {
+      const blockContent = match[1];
+      const blockStart = match.index;
 
-      if (referencedRef instanceof PDFRef) {
-        const referencedStream = pdfDoc.context.lookup(referencedRef, PDFStream) as PDFRawStream;
-        if (referencedStream?.dict.get(PDFName.of('Subtype')) === PDFName.of('Form')) {
-          console.log(`Deep-diving into XObject: /${objectName}`);
-          processStreamRecursively(pdfDoc, referencedRef, textContent, rX, rY, rW, rH);
-        }
+      // 1. Verify Y-Coordinate (Must match to avoid ghost redaction)
+      const tmRegex = /(-?\d+\.?\d*)\s+(-?\d+\.?\d*)\s+Tm|(-?\d+\.?\d*)\s+Td/g;
+      let tmMatch, blockY = 0;
+      while ((tmMatch = tmRegex.exec(blockContent)) !== null) {
+        blockY = parseFloat(tmMatch[2] || tmMatch[3] || "0");
       }
-    }
+      if (Math.abs(blockY - itemY) > 2) continue;
 
-    // 3. Strip Text in CURRENT stream
-    for (const item of textContent.items) {
-      if ('str' in item) {
-        const tx = item.transform[4];
-        const ty = item.transform[5];
-        // Note: This coordinate check assumes text coordinates map directly
-        // to the top-level page space. If not, complex CTM math is required.
-        if (tx >= rX && tx <= rX + rW && ty >= rY && ty <= rY + rH) {
-          if (item.str.trim().length > 0 && streamString.includes(item.str)) {
-            const newBytes = surgicalStrip(bytes, item.str);
-            if (newBytes !== bytes) {
-              bytes = newBytes;
-              modified = true;
+      // 2. Full Containment Check logic
+      const shouldRedact = (i: number) => {
+        const charStartX = itemX + (i * charWidth);
+        const charEndX = itemX + ((i + 1) * charWidth);
+        return charStartX >= rX && charEndX <= rX + rW && itemY >= rY && itemY <= rY + rH;
+      };
+
+      // 3. The "Work-on-Everything" Hex Hunter
+      // We look for any hex string <...> inside this block
+      const hexRegex = /<([0-9a-fA-F]+)>/g;
+      let hexMatch;
+      while ((hexMatch = hexRegex.exec(blockContent)) !== null) {
+        const fullHex = hexMatch[1];
+        const hIdxInBlock = hexMatch.index;
+        const hIdx = blockStart + 3 + hIdxInBlock; // Global index in Uint8Array
+
+        // If the length of the hex string is a multiple of our text string length,
+        // it is extremely likely to be our target text (either 2-byte or 4-byte CID).
+        if (fullHex.length === item.str.length * 4) { // 4-byte CID (common)
+          for (let i = 0; i < item.str.length; i++) {
+            if (shouldRedact(i)) {
+              const start = hIdx + 1 + (i * 4);
+              result[start] = 48; result[start + 1] = 48; // '00'
+              result[start + 2] = 51; result[start + 3] = 48; // '30'
+            }
+          }
+        } else if (fullHex.length === item.str.length * 2) { // 2-byte CID (Standard)
+          for (let i = 0; i < item.str.length; i++) {
+            if (shouldRedact(i)) {
+              const start = hIdx + 1 + (i * 2);
+              result[start] = 51; result[start + 1] = 48; // '30'
             }
           }
         }
       }
-    }
 
-    // 4. Re-assign
-    if (modified) {
-      const literalDict: any = {};
-      stream.dict.entries().forEach(([k, v]) => {
-        if (k.asString() !== 'Filter') literalDict[k.asString()] = v;
-      });
-      const newStream = pdfDoc.context.flateStream(bytes, literalDict);
-      pdfDoc.context.assign(streamRef, newStream);
+      // 4. Fallback: Literal Check (For numbers and simple text)
+      // Escaping special characters for the regex search
+      const safeStr = item.str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const litPattern = `(${safeStr})`;
+      const litIdxInBlock = blockContent.indexOf(litPattern);
+      if (litIdxInBlock !== -1) {
+        const litIdx = blockStart + 3 + litIdxInBlock;
+        for (let i = 0; i < item.str.length; i++) {
+          if (shouldRedact(i)) result[litIdx + 1 + i] = 48; // '0'
+        }
+      }
     }
+    return result;
   };
-
 
   const stopDrawing = async () => {
     if (!isDrawing || !pdfDoc || !currentRect || !pdfjsDoc) return;
@@ -283,7 +245,8 @@ const Redactor = () => {
         let match;
         while ((match = doRegex.exec(streamString)) !== null) {
           const objectName = match[1];
-          if (objectName === undefined) continue;
+          if (!objectName) continue;
+
           const xObjects = streamResources?.lookupMaybe(PDFName.of('XObject'), PDFDict);
           const referencedRef = xObjects?.get(PDFName.of(objectName));
           if (referencedRef instanceof PDFRef) {
@@ -296,16 +259,10 @@ const Redactor = () => {
 
         for (const item of textContent.items) {
           if ('str' in item) {
-            const tx = item.transform[4];
-            const ty = item.transform[5];
-            if (tx >= rX && tx <= rX + rW && ty >= rY && ty <= rY + rH) {
-              if (item.str.trim().length > 0) {
-                const newBytes = surgicalStrip(bytes, item.str);
-                if (newBytes.some((byte, idx) => byte !== bytes[idx])) {
-                  bytes = newBytes;
-                  modified = true;
-                }
-              }
+            const newBytes = surgicalStrip(bytes, item, rX, rY, rW, rH);
+            if (newBytes.some((byte, idx) => byte !== bytes[idx])) {
+              bytes = newBytes;
+              modified = true;
             }
           }
         }
@@ -325,6 +282,8 @@ const Redactor = () => {
       contentRefs.forEach(ref => {
         if (ref instanceof PDFRef) processStreamRecursively(ref, pageResources);
       });
+
+
 
       pdfPage.drawRectangle({
         x: rX, y: rY, width: rW, height: rH,
