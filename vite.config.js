@@ -6,6 +6,7 @@ import { resolve } from "node:path"
 export default defineConfig({
   plugins: [preact()],
   build: {
+    minify: "none",
     rollupOptions: {
       input: {
         app: resolve(__dirname, "index.html"),

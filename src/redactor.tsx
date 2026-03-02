@@ -1,10 +1,14 @@
-import pako from "pako";
-import { PDFArray, PDFContentStream, PDFDict, PDFDocument, PDFName, PDFNumber, PDFOperator, PDFOperatorNames, PDFRawStream, PDFRef, PDFStream, rgb } from 'pdf-lib';
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef } from 'pdf-lib';
 import * as pdfjsLib from "pdfjs-dist";
-import { h, type TargetedEvent, type TargetedMouseEvent } from 'preact';
+import { h, Fragment, type TargetedEvent, type TargetedMouseEvent } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import styles from "./assets/redactor.module.css";
 import type { PDFDocumentProxy } from 'pdfjs-dist';
+import { rasterizePDF } from './pdfRasterize.js';
+import { redactTextInStreams, type PdfRect } from './textRedaction.js';
+import { redactImagesInStream } from './imageRedaction.js';
+import { rgb } from 'pdf-lib';
+import { PdfDeepInspector, PdfInspectorPanel } from './pdfInspector.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdfWorker.js";
 
@@ -21,11 +25,19 @@ const Redactor = () => {
   const [isDrawing, setIsDrawing] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [startPoint, setStartPoint] = useState({ x: 0, y: 0 });
-  const [currentRect, setCurrentRect] = useState<{ x: number, y: number, width: number, height: number } | null>(null);
-  const [renderScale] = useState(1.5);
+  const [currentRect, setCurrentRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const [renderScale] = useState(1);
   const [downloadScale, setDownloadScale] = useState(1.5);
+  const [rasterizeOutput, setRasterizeOutput] = useState(false);
 
-  const renderPage = async (pageNum: number, pdfjsDocument: PDFDocumentProxy, pdfLibDoc: PDFDocument) => {
+  // overlayRect is passed directly to renderPage so the drawn rectangle
+  // is always in sync with the current mouse position (state updates are async).
+  const renderPage = async (
+    pageNum: number,
+    pdfjsDocument: PDFDocumentProxy,
+    pdfLibDoc: PDFDocument,
+    overlayRect?: { x: number; y: number; width: number; height: number } | null
+  ) => {
     if (renderTaskRef.current || !pdfjsDocument || !canvasRef.current || !pdfLibDoc) return;
 
     renderTaskRef.current = true;
@@ -45,19 +57,14 @@ const Redactor = () => {
 
       canvas.width = viewport.width;
       canvas.height = viewport.height;
-
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      await page.render({
-        canvas,
-        canvasContext: ctx,
-        viewport: viewport,
-      }).promise;
+      await page.render({ canvas, canvasContext: ctx, viewport }).promise;
 
-      if (currentRect) {
+      if (overlayRect) {
         ctx.strokeStyle = 'red';
         ctx.lineWidth = 2;
-        ctx.strokeRect(currentRect.x, currentRect.y, currentRect.width, currentRect.height);
+        ctx.strokeRect(overlayRect.x, overlayRect.y, overlayRect.width, overlayRect.height);
       }
     } catch (error) {
       console.error("Error rendering PDF page:", error);
@@ -69,10 +76,8 @@ const Redactor = () => {
 
   const initPdf = async (fileBytes: Uint8Array) => {
     try {
-      const bytesCopy = new Uint8Array(fileBytes);
-      const loadedPdfDoc = await PDFDocument.load(bytesCopy);
+      const loadedPdfDoc = await PDFDocument.load(new Uint8Array(fileBytes));
       const loadedPdfjsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(fileBytes) }).promise;
-
       setPdfDoc(loadedPdfDoc);
       setPdfjsDoc(loadedPdfjsDoc);
       setPdfBytes(new Uint8Array(fileBytes));
@@ -85,208 +90,102 @@ const Redactor = () => {
   const handleFileChange = async (event: TargetedEvent<HTMLInputElement>) => {
     const file = event.currentTarget?.files?.[0];
     if (!file) return;
-
     setFilename(file.name);
-
     const reader = new FileReader();
     reader.onload = async (e) => {
-      const arrayBuffer = e.target?.result;
-      if (!arrayBuffer || typeof arrayBuffer === "string") return;
-      await initPdf(new Uint8Array(arrayBuffer));
+      const buf = e.target?.result;
+      if (!buf || typeof buf === "string") return;
+      await initPdf(new Uint8Array(buf));
     };
     reader.readAsArrayBuffer(file);
   };
 
   const startDrawing = (e: TargetedMouseEvent<HTMLCanvasElement>) => {
     if (!pdfjsDoc || renderTaskRef.current) return;
-
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-
     setStartPoint({ x, y });
     setIsDrawing(true);
     setCurrentRect({ x, y, width: 0, height: 0 });
   };
 
   const draw = (e: TargetedMouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing || !pdfjsDoc || renderTaskRef.current) return;
-
+    if (!isDrawing || !pdfjsDoc || !pdfDoc) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-
-    const width = x - startPoint.x;
-    const height = y - startPoint.y;
-
-    setCurrentRect({ x: startPoint.x, y: startPoint.y, width, height });
-
-    if (pdfDoc && pdfjsDoc) {
-      renderPage(currentPageNum, pdfjsDoc, pdfDoc);
-    }
+    const newRect = { x: startPoint.x, y: startPoint.y, width: x - startPoint.x, height: y - startPoint.y };
+    setCurrentRect(newRect);
+    // Pass newRect directly — don't rely on the async state update
+    renderPage(currentPageNum, pdfjsDoc, pdfDoc, newRect);
   };
 
-  const surgicalStrip = (data: Uint8Array, item: any, rX: number, rY: number, rW: number, rH: number): Uint8Array => {
-    const result = new Uint8Array(data);
-    const decoder = new TextDecoder();
-    const streamString = decoder.decode(data);
+  /**
+   * Converts a canvas-space selection rectangle into PDF user-space coordinates.
+   *
+   * Canvas coordinates: origin top-left, units = CSS pixels.
+   * PDF coordinates:    origin bottom-left, units = points (at renderScale 1, 1pt = 1px).
+   *
+   * scaleX/scaleY handle any CSS zoom applied to the canvas element.
+   */
+  const canvasRectToPdf = async (
+    raw: { x: number; y: number; width: number; height: number }
+  ): Promise<PdfRect | null> => {
+    const canvas = canvasRef.current;
+    if (!pdfjsDoc || !canvas) return null;
 
-    const itemX = item.transform[4];
-    const itemY = item.transform[5];
-    const itemWidth = item.width;
-    const charWidth = itemWidth / item.str.length;
+    const pageProxy = await pdfjsDoc.getPage(currentPageNum);
+    const viewport = pageProxy.getViewport({ scale: renderScale });
 
-    const btRegex = /BT\s([\s\S]*?)\sET/g;
-    let match;
+    const scaleX = canvas.width / canvas.clientWidth;
+    const scaleY = canvas.height / canvas.clientHeight;
 
-    while ((match = btRegex.exec(streamString)) !== null) {
-      const blockContent = match[1];
-      const blockStart = match.index;
+    // Normalize: ensure width/height are positive and origin is top-left
+    const xLeft = (raw.width < 0 ? raw.x + raw.width : raw.x) * scaleX;
+    const yTop = (raw.height < 0 ? raw.y + raw.height : raw.y) * scaleY;
+    const rW = Math.abs(raw.width) * scaleX;
+    const rH = Math.abs(raw.height) * scaleY;
 
-      // 1. Verify Y-Coordinate (Must match to avoid ghost redaction)
-      const tmRegex = /(-?\d+\.?\d*)\s+(-?\d+\.?\d*)\s+Tm|(-?\d+\.?\d*)\s+Td/g;
-      let tmMatch, blockY = 0;
-      while ((tmMatch = tmRegex.exec(blockContent)) !== null) {
-        blockY = parseFloat(tmMatch[2] || tmMatch[3] || "0");
-      }
-      if (Math.abs(blockY - itemY) > 2) continue;
+    // Flip Y: PDF origin is bottom-left
+    const rY = viewport.height - yTop - rH;
 
-      // 2. Full Containment Check logic
-      const shouldRedact = (i: number) => {
-        const charStartX = itemX + (i * charWidth);
-        const charEndX = itemX + ((i + 1) * charWidth);
-        return charStartX >= rX && charEndX <= rX + rW && itemY >= rY && itemY <= rY + rH;
-      };
-
-      // 3. The "Work-on-Everything" Hex Hunter
-      // We look for any hex string <...> inside this block
-      const hexRegex = /<([0-9a-fA-F]+)>/g;
-      let hexMatch;
-      while ((hexMatch = hexRegex.exec(blockContent)) !== null) {
-        const fullHex = hexMatch[1];
-        const hIdxInBlock = hexMatch.index;
-        const hIdx = blockStart + 3 + hIdxInBlock; // Global index in Uint8Array
-
-        // If the length of the hex string is a multiple of our text string length,
-        // it is extremely likely to be our target text (either 2-byte or 4-byte CID).
-        if (fullHex.length === item.str.length * 4) { // 4-byte CID (common)
-          for (let i = 0; i < item.str.length; i++) {
-            if (shouldRedact(i)) {
-              const start = hIdx + 1 + (i * 4);
-              result[start] = 48; result[start + 1] = 48; // '00'
-              result[start + 2] = 51; result[start + 3] = 48; // '30'
-            }
-          }
-        } else if (fullHex.length === item.str.length * 2) { // 2-byte CID (Standard)
-          for (let i = 0; i < item.str.length; i++) {
-            if (shouldRedact(i)) {
-              const start = hIdx + 1 + (i * 2);
-              result[start] = 51; result[start + 1] = 48; // '30'
-            }
-          }
-        }
-      }
-
-      // 4. Fallback: Literal Check (For numbers and simple text)
-      // Escaping special characters for the regex search
-      const safeStr = item.str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const litPattern = `(${safeStr})`;
-      const litIdxInBlock = blockContent.indexOf(litPattern);
-      if (litIdxInBlock !== -1) {
-        const litIdx = blockStart + 3 + litIdxInBlock;
-        for (let i = 0; i < item.str.length; i++) {
-          if (shouldRedact(i)) result[litIdx + 1 + i] = 48; // '0'
-        }
-      }
-    }
-    return result;
+    return { rX: xLeft, rY, rW, rH };
   };
 
   const stopDrawing = async () => {
-    if (!isDrawing || !pdfDoc || !currentRect || !pdfjsDoc) return;
+    if (!isDrawing || !pdfDoc || !pdfjsDoc || !currentRect) return;
     setIsDrawing(false);
+    setCurrentRect(null);
 
-    const { x, y, width: rW_raw, height: rH_raw } = currentRect;
-    const pageProxy = await pdfjsDoc.getPage(currentPageNum);
-    const viewport = pageProxy.getViewport({ scale: 1.0 });
-
-    const rX = (rW_raw < 0 ? x + rW_raw : x) / renderScale;
-    const rW = Math.abs(rW_raw) / renderScale;
-    const rH = Math.abs(rH_raw) / renderScale;
-    const rY = viewport.height - ((rH_raw < 0 ? y + rH_raw : y) / renderScale) - rH;
+    const pdfRect = await canvasRectToPdf(currentRect);
+    if (!pdfRect || pdfRect.rW < 1 || pdfRect.rH < 1) return;
 
     try {
       const pdfPage = pdfDoc.getPage(currentPageNum - 1);
-      const textContent = await pageProxy.getTextContent();
-
-      const processStreamRecursively = (streamRef: PDFRef, resourcesDict?: PDFDict) => {
-        const stream = pdfDoc.context.lookup(streamRef, PDFStream) as PDFRawStream;
-        if (!stream) return;
-
-        let bytes = stream.contents;
-        const filter = stream.dict.get(PDFName.of('Filter'));
-        const isCompressed = filter === PDFName.of('FlateDecode') || (Array.isArray(filter) && filter.includes(PDFName.of('FlateDecode')));
-
-        if (isCompressed) {
-          try { bytes = pako.inflate(bytes); } catch (e) { return; }
-        }
-
-        let modified = false;
-        const streamString = new TextDecoder().decode(bytes);
-        const streamResources = stream.dict.lookupMaybe(PDFName.of('Resources'), PDFDict) || resourcesDict;
-
-        const doRegex = /\/(\w+)\s+Do/g;
-        let match;
-        while ((match = doRegex.exec(streamString)) !== null) {
-          const objectName = match[1];
-          if (!objectName) continue;
-
-          const xObjects = streamResources?.lookupMaybe(PDFName.of('XObject'), PDFDict);
-          const referencedRef = xObjects?.get(PDFName.of(objectName));
-          if (referencedRef instanceof PDFRef) {
-            const referencedStream = pdfDoc.context.lookup(referencedRef, PDFStream) as PDFRawStream;
-            if (referencedStream?.dict.get(PDFName.of('Subtype')) === PDFName.of('Form')) {
-              processStreamRecursively(referencedRef, streamResources);
-            }
-          }
-        }
-
-        for (const item of textContent.items) {
-          if ('str' in item) {
-            const newBytes = surgicalStrip(bytes, item, rX, rY, rW, rH);
-            if (newBytes.some((byte, idx) => byte !== bytes[idx])) {
-              bytes = newBytes;
-              modified = true;
-            }
-          }
-        }
-
-        if (modified) {
-          const compressedBytes = pako.deflate(bytes);
-          (stream as any).contents = compressedBytes;
-          stream.dict.set(PDFName.of('Filter'), PDFName.of('FlateDecode'));
-          stream.dict.set(PDFName.of('Length'), PDFNumber.of(compressedBytes.length));
-        }
-      };
-
       const contentsEntry = pdfPage.node.get(PDFName.of('Contents'));
-      const contentRefs = contentsEntry instanceof PDFArray ? contentsEntry.asArray() : [contentsEntry];
+      const contentRefs = contentsEntry instanceof PDFArray
+        ? contentsEntry.asArray()
+        : [contentsEntry];
       const pageResources = pdfPage.node.lookupMaybe(PDFName.of('Resources'), PDFDict);
 
-      contentRefs.forEach(ref => {
-        if (ref instanceof PDFRef) processStreamRecursively(ref, pageResources);
-      });
+      for (const ref of contentRefs) {
+        if (ref instanceof PDFRef) {
+          redactTextInStreams(pdfDoc, ref, pdfRect, pageResources);
+          await redactImagesInStream(pdfDoc, ref, pdfRect, pageResources ?? undefined);
+        }
+      }
 
-
-
+      // Draw an opaque black rectangle over the selection (visual + image redaction layer)
       pdfPage.drawRectangle({
-        x: rX, y: rY, width: rW, height: rH,
+        x: pdfRect.rX,
+        y: pdfRect.rY,
+        width: pdfRect.rW,
+        height: pdfRect.rH,
         color: rgb(0, 0, 0),
       });
 
@@ -294,70 +193,29 @@ const Redactor = () => {
       setPdfBytes(newBytes);
       const nextPdfjs = await pdfjsLib.getDocument({ data: newBytes.slice(0) }).promise;
       setPdfjsDoc(nextPdfjs);
-      setCurrentRect(null);
     } catch (e) {
       console.error(e);
     }
   };
 
-  const rasterizePDF = async (): Promise<Uint8Array | null> => {
-    if (!pdfjsDoc) return null;
-
-    // Create a new PDF document for the rasterized output
-    const newPdfDoc = await PDFDocument.create();
-    const numPages = pdfjsDoc.numPages;
-
-    for (let i = 1; i <= numPages; i++) {
-      const page = await pdfjsDoc.getPage(i);
-
-      // Use a high scale (2.0 or 3.0) to maintain text readability after rasterization
-      const viewport = page.getViewport({ scale: downloadScale });
-
-      const canvas = document.createElement('canvas');
-      const context = canvas.getContext('2d');
-      if (!context) continue;
-
-      canvas.height = viewport.height;
-      canvas.width = viewport.width;
-
-      // Render PDF page to the offscreen canvas
-      await page.render({
-        canvas,
-        canvasContext: context,
-        viewport: viewport,
-      }).promise;
-
-      // Convert canvas to a high-quality JPEG or PNG
-      const imageDataUri = canvas.toDataURL('image/jpeg', 1);
-      const imageBytes = await fetch(imageDataUri).then((res) => res.arrayBuffer());
-
-      // Embed the image into the new PDF
-      const jpgImage = await newPdfDoc.embedJpg(imageBytes);
-      const newPage = newPdfDoc.addPage([viewport.width, viewport.height]);
-
-      newPage.drawImage(jpgImage, {
-        x: 0,
-        y: 0,
-        width: viewport.width,
-        height: viewport.height,
-      });
-    }
-
-    const pdfBytes = await newPdfDoc.save();
-    return new Uint8Array(pdfBytes);
+  const addRedactedToFilename = (name: string) => {
+    const dot = name.lastIndexOf(".");
+    const base = name.substring(0, dot);
+    const ext = name.substring(dot + 1);
+    return `${base} - Redacted.${ext}`;
   };
 
-  const addRedactedToFilename = (filename: string) => {
-    var extensionIndex = filename.lastIndexOf(".");
-    var fileName = filename.substring(0, extensionIndex);
-    var extension = filename.substring(extensionIndex + 1);
-    return `${fileName} - Redacted.${extension}`;
-  }
-
   const handleDownload = async () => {
-    if (!pdfBytes) return;
+    if (!pdfBytes || !pdfjsDoc) return;
 
-    const blob = new Blob([new Uint8Array(pdfBytes)], { type: 'application/pdf' });
+    let outputBytes: Uint8Array;
+    if (rasterizeOutput) {
+      outputBytes = await rasterizePDF(pdfjsDoc, downloadScale);
+    } else {
+      outputBytes = pdfBytes;
+    }
+
+    const blob = new Blob([outputBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -377,7 +235,8 @@ const Redactor = () => {
   return (
     <div className={styles.container}>
       <h1>PDF Redactor</h1>
-      <div className={styles.controls} style={{ display: "flex" }}>
+
+      <div className={styles.controls}>
         <input
           id="file-upload"
           type="file"
@@ -386,10 +245,7 @@ const Redactor = () => {
           ref={fileInputRef}
           className={styles.hiddenInput}
         />
-        <label
-          htmlFor="file-upload"
-          className={`${styles.buttonBase} ${styles.uploadButton}`}
-        >
+        <label htmlFor="file-upload" className={`${styles.buttonBase} ${styles.uploadButton}`}>
           Choose File
         </label>
         <button
@@ -401,20 +257,31 @@ const Redactor = () => {
         </button>
       </div>
 
-      <div style={{ display: "flex", }}>
-        <label>Zoom Level</label>
-        <select onChange={(e) => {
-          setDownloadScale(Number(e.currentTarget.value));
-        }}>
-          <option>1</option>
-          <option selected={true}>1.5</option>
-          <option>2</option>
-          <option>3</option>
-          <option>4</option>
-        </select>
+      <div style={{ display: "flex", gap: "20px", alignItems: "center" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <input
+            type="checkbox"
+            checked={rasterizeOutput}
+            onChange={e => setRasterizeOutput((e.currentTarget as HTMLInputElement).checked)}
+          />
+          Rasterize output (fully removes hidden image/text data; slower)
+        </label>
+
+        {rasterizeOutput && (
+          <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            Zoom:
+            <select onChange={e => setDownloadScale(Number(e.currentTarget.value))}>
+              <option value="1">1×</option>
+              <option value="1.5" selected>1.5×</option>
+              <option value="2">2×</option>
+              <option value="3">3×</option>
+              <option value="4">4×</option>
+            </select>
+          </label>
+        )}
       </div>
 
-      <div className={styles.canvasContainer} style={{ position: 'relative', border: '1px solid black', display: 'inline-block', marginTop: '10px' }}>
+      <div className={styles.canvasContainer}>
         <canvas
           ref={canvasRef}
           onMouseDown={startDrawing}
@@ -424,6 +291,11 @@ const Redactor = () => {
           style={{ cursor: 'crosshair', display: 'block' }}
         />
       </div>
+
+      {pdfjsDoc && <>
+        <PdfInspectorPanel pdfProxy={pdfjsDoc} pageNumber={currentPageNum} />
+        <PdfDeepInspector pdfProxy={pdfjsDoc} pageNumber={currentPageNum} />
+      </>}
     </div>
   );
 };

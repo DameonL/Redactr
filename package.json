@@ -6,15 +6,17 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && copy-files-from-to",
-    "preview": "vite preview"
+    "preview": "npm run build && vite preview"
   },
   "dependencies": {
+    "pako": "^2.1.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.4.624",
     "preact": "^10.27.2"
   },
   "devDependencies": {
     "@preact/preset-vite": "^2.10.2",
+    "@types/pako": "^2.0.4",
     "@types/pdfjs-dist": "^2.10.377",
     "copy-files-from-to": "^4.0.0",
     "typescript": "^5.9.3",
