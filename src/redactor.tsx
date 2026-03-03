@@ -241,8 +241,13 @@ const Redactor = () => {
 
       const newBytes = await pdfDoc.save({ useObjectStreams: false });
       setPdfBytes(newBytes);
-      const nextPdfjs = await pdfjsLib.getDocument({ data: newBytes.slice(0) }).promise;
-      setPdfjsDoc(nextPdfjs);
+      
+      // Reload both the pdfjs and pdf-lib documents from the newly saved bytes
+      // to ensure the state is consistent for the next redaction.
+      const loadedPdfjsDoc = await pdfjsLib.getDocument({ data: newBytes.slice(0) }).promise;
+      const loadedPdfDoc = await PDFDocument.load(newBytes.slice(0));
+      setPdfjsDoc(loadedPdfjsDoc);
+      setPdfDoc(loadedPdfDoc);
     } catch (e) {
       console.error(e);
     }

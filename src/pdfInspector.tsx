@@ -130,7 +130,7 @@ export function PdfDeepInspector({ pdfProxy, pageNumber }: { pdfProxy: any; page
       const opList = await page.getOperatorList();
       const { OPS } = pdfjsLib;
       const results: any[] = [];
-      
+
       let ctm = [1, 0, 0, 1, 0, 0];
       let tm = [1, 0, 0, 1, 0, 0];
       let tlm = [1, 0, 0, 1, 0, 0];
@@ -148,13 +148,12 @@ export function PdfDeepInspector({ pdfProxy, pageNumber }: { pdfProxy: any; page
       for (let i = 0; i < opList.fnArray.length; i++) {
         const fn = opList.fnArray[i];
         const args = opList.argsArray[i];
-        
+
         if (fn === OPS.save) gStack.push([...ctm]);
-        else if (fn === OPS.restore) ctm = gStack.pop() || [1,0,0,1,0,0];
-        else if (fn === OPS.transform) ctm = matMul(args[0], ctm);
-        else if (fn === OPS.beginText) { tm = [1,0,0,1,0,0]; tlm = [1,0,0,1,0,0]; }
-        else if (fn === OPS.setTextMatrix) { tm = args[0]; tlm = [...tm]; }
-        else if (fn === OPS.moveText) { tlm = matMul([1, 0, 0, 1, args[0], args[1]], tlm); tm = [...tlm]; }
+        else if (fn === OPS.transform) ctm = matMul(args as number[], ctm);
+        else if (fn === OPS.beginText) { tm = [1, 0, 0, 1, 0, 0]; tlm = [1, 0, 0, 1, 0, 0]; }
+        else if (fn === OPS.setTextMatrix) { tm = args as number[]; tlm = [...tm]; }
+        else if (fn === OPS.moveText) { tlm = matMul([1, 0, 0, 1, args[0], args[1]], tlm); tm = [...tlm]; } else if (fn === OPS.restore) ctm = gStack.pop() || [1, 0, 0, 1, 0, 0];
         else if (fn === OPS.showText || fn === OPS.showSpacedText) {
           const trm = matMul(tm, ctm);
           const glyphs = args[0];

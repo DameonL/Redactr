@@ -1,5 +1,8 @@
 import pako from "pako";
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFRef, PDFRawStream, PDFStream } from 'pdf-lib';
+import * as fontkit from 'fontkit';
+import afm from "afm";
+import { PDFStreamParser, type PdfOperation } from './pdfStreamParser.js'; 
 
 export interface PdfRect {
   rX: number;
@@ -46,8 +49,8 @@ const inverseTransform = (m: Matrix, x: number, y: number) => {
   const dx = x - m[4];
   const dy = y - m[5];
   return {
-    x: (dx * m[3] - dy * m[2]) / det,
-    y: (dy * m[0] - dx * m[1]) / det
+    x: (dx * m[3] - dy * m[1]) / det, 
+    y: (dy * m[0] - dx * m[1]) / det  
   };
 };
 
@@ -173,6 +176,91 @@ const blackOutImage = async (pdfDoc: PDFDocument, ref: PDFRef, ctm: Matrix, pdfR
   return { surgical: loaded, info: loaded ? "Surgical applied" : "Full blackout (unsupported format)" };
 };
 
+interface CustomFontMetrics {
+    unitsPerEm: number;
+    getGlyph(codePoint: number): { advanceWidth: number };
+}
+
+class AfmFontWrapper implements CustomFontMetrics {
+    unitsPerEm: number = 1000; 
+    private charMetrics: Map<number, { width: number }>;
+
+    constructor(afmFontData: Array<{ charCode: number; width: number; name: string }>) {
+        this.charMetrics = new Map();
+        for (const metric of afmFontData) {
+            if (metric.charCode !== -1) { 
+                this.charMetrics.set(metric.charCode, { width: metric.width });
+            }
+        }
+    }
+
+    getGlyph(codePoint: number): { advanceWidth: number } {
+        const metric = this.charMetrics.get(codePoint);
+        if (metric) {
+            return { advanceWidth: metric.width };
+        }
+        return { advanceWidth: 250 };
+    }
+}
+
+const fontCache = new Map<string, CustomFontMetrics | null>();
+
+async function getFontMetrics(pdfDoc: PDFDocument, fontRef: PDFRef, fontName: string): Promise<CustomFontMetrics | null> {
+  const refStr = fontRef.toString();
+  if (fontCache.has(refStr)) return fontCache.get(refStr) || null;
+
+  const afmFontData = (afm.fonts as any)[fontName];
+  if (afmFontData) {
+      const afmWrapper = new AfmFontWrapper(afmFontData);
+      fontCache.set(refStr, afmWrapper);
+      return afmWrapper;
+  }
+
+  try {
+    const fontDict = pdfDoc.context.lookup(fontRef, PDFDict);
+    const descriptorRef = fontDict.get(PDFName.of('FontDescriptor'));
+    if (!(descriptorRef instanceof PDFRef)) {
+      fontCache.set(refStr, null);
+      return null;
+    }
+
+    const descriptor = pdfDoc.context.lookup(descriptorRef, PDFDict);
+    const fontStreamRef = descriptor.get(PDFName.of('FontFile2')) || descriptor.get(PDFName.of('FontFile3'));
+    if (!(fontStreamRef instanceof PDFRef)) {
+      fontCache.set(refStr, null);
+      return null;
+    }
+    
+    const fontStream = pdfDoc.context.lookup(fontStreamRef, PDFStream) as PDFRawStream;
+    let fontBytes: Uint8Array = fontStream.contents;
+    
+    if (fontStream.dict.has(PDFName.of('Filter')) && fontStream.dict.get(PDFName.of('Filter')) === PDFName.of('FlateDecode')) {
+        try { fontBytes = pako.inflate(fontBytes); } catch (e) {
+            console.warn(`Could not inflate font stream for ${fontName}:`, e);
+            fontCache.set(refStr, null);
+            return null;
+        }
+    }
+    
+    const fkFont = fontkit.create(fontBytes);
+    
+    const fontWrapper: CustomFontMetrics = {
+        unitsPerEm: fkFont.unitsPerEm || 1000,
+        getGlyph: (codePoint: number) => {
+            const glyph = fkFont.glyphForCodePoint(codePoint);
+            return { advanceWidth: glyph ? glyph.advanceWidth : 0 };
+        }
+    };
+    
+    fontCache.set(refStr, fontWrapper);
+    return fontWrapper;
+  } catch (e) {
+    console.error(`Failed to parse font ${refStr} with fontkit:`, e);
+    fontCache.set(refStr, null);
+    return null;
+  }
+}
+
 export const redactContentStream = async (
   pdfDoc: PDFDocument,
   streamRef: PDFRef,
@@ -192,140 +280,228 @@ export const redactContentStream = async (
   const streamStr = LATIN1.decode(bytes);
   const resources = stream.dict.lookupMaybe(PDFName.of('Resources'), PDFDict) ?? resourcesDict;
   const xObjects = resources?.lookupMaybe(PDFName.of('XObject'), PDFDict);
+  const fontsDict = resources?.lookupMaybe(PDFName.of('Font'), PDFDict);
 
   const output: Uint8Array[] = [];
-  let lastPos = 0;
 
   let gStack: Array<{ ctm: Matrix; tr: number }> = [];
   let ctm: Matrix = [...initialCtm];
   let tm: Matrix = [...IDENTITY];
   let tlm: Matrix = [...IDENTITY];
   let fontSize = 10;
-  let leading = 0;
   let currentTr = 0;
+  let currentFont: CustomFontMetrics | null = null; 
 
-  const NUM = '(?:-?\\d+\\.?\\d*|-?\\.\\d+)';
-  const NAME = '/[^\\s\\(\\)\\[\\]\\{\\}\\/<>%]+';
-  const OPERAND = `(?:${NUM}|${NAME})`;
-  // Non-greedy match for operands, then the operator
-  const tokenRe = new RegExp(`(?:((?:${OPERAND}\\s+)*?))(Tm|Td|TD|T\\*|BT|ET|TL|Tf|Tr|cm|q|Q|Do)|(\\[[\\s\\S]*?\\]|[\\(\\<][\\s\\S]*?[\\)\\>])\\s*(Tj|TJ|'|\\")`, 'g');
+  const parser = new PDFStreamParser(streamStr);
+  let opObj: PdfOperation | null;
 
-  let m: RegExpExecArray | null;
-  while ((m = tokenRe.exec(streamStr)) !== null) {
-    if (m.index > lastPos) output.push(encode(streamStr.substring(lastPos, m.index)));
+  while ((opObj = parser.nextOperation()) !== null) {
+    if (opObj.op === 'EOF' || opObj.op === 'INLINE_IMAGE') {
+        output.push(encode(opObj.rawOutput + '\n'));
+        continue;
+    }
 
-    if (m[2]) { // Matched an operator like 'cm', 'Tf', etc.
-      const op = m[2];
-      const rawArgs = (m[1] || '').trim().split(/\s+/).filter(Boolean);
-      const args = rawArgs.map(parseFloat);
+    const op = opObj.op;
+    const numArgs = opObj.args.filter((a): a is number => typeof a === 'number');
 
-      if (op === 'q') gStack.push({ ctm: [...ctm], tr: currentTr });
-      else if (op === 'Q') { const s = gStack.pop() || { ctm: [...initialCtm], tr: 0 }; ctm = s.ctm; currentTr = s.tr; }
-      else if (op === 'cm' && args.length >= 6) ctm = matMul(args as any, ctm);
-      else if (op === 'BT') { tm = [...IDENTITY]; tlm = [...IDENTITY]; }
-      else if (op === 'Tm' && args.length >= 6) { tm = args as any; tlm = [...tm]; }
-      else if (op === 'Tf' && rawArgs.length >= 2) { fontSize = parseFloat(rawArgs[1]) || fontSize; }
-      else if (op === 'Tr' && args.length >= 1) currentTr = args[0]!;
-      else if (op === 'Td' || op === 'TD') { if(args.length>=2) { tlm = matMul([1,0,0,1,args[0],args[1]], tlm); tm=[...tlm]; if(op==='TD') leading=-args[1]; } }
-      else if (op === 'TL' && args.length >= 1) leading = args[0]!;
-      else if (op === 'T*') { tlm = matMul([1,0,0,1,0,-leading], tlm); tm=[...tlm]; }
-      else if (op === 'Do') {
-        const name = rawArgs[0]?.replace(/^\//, '') || "";
-        const ref = xObjects?.get(PDFName.of(name));
-        if (ref instanceof PDFRef) {
-          const xStream = pdfDoc.context.lookup(ref, PDFStream) as PDFRawStream;
-          const subtype = resolveName(xStream?.dict.get(PDFName.of('Subtype')));
-          const bounds = unitSquareBounds(ctm);
-          const overlaps = rectsOverlap(bounds, pdfRect);
-          if (subtype === 'Image' && overlaps) {
-            const res = await blackOutImage(pdfDoc, ref, ctm, pdfRect);
-            redactionDebugLog.push({ text: `Image: /${name}`, op: 'Do', curX: ctm[4], curY: ctm[5], rect: { ...pdfRect }, accepted: true, reason: res.info });
-          } else if (subtype === 'Form') {
-            const formMat = xStream.dict.lookupMaybe(PDFName.of('Matrix'), PDFArray);
-            let nextCtm = ctm;
-            if (formMat) nextCtm = matMul(formMat.asArray().map(v=>(v as PDFNumber).asNumber()) as any, ctm);
-            await redactContentStream(pdfDoc, ref, pdfRect, resources, nextCtm);
-            redactionDebugLog.push({ text: `Form: /${name}`, op: 'Do', curX: ctm[4], curY: ctm[5], rect: { ...pdfRect }, accepted: overlaps, reason: overlaps ? "Recursed" : "Skipped" });
+    if (op === 'q') {
+      gStack.push({ ctm: [...ctm], tr: currentTr });
+      output.push(encode(opObj.rawOutput + '\n'));
+    } 
+    else if (op === 'Q') {
+      const s = gStack.pop() || { ctm: [...initialCtm], tr: 0 }; 
+      ctm = s.ctm; 
+      currentTr = s.tr;
+      output.push(encode(opObj.rawOutput + '\n'));
+    }
+    else if (op === 'cm' && numArgs.length >= 6) { 
+      ctm = matMul(numArgs.slice(-6) as any, ctm);
+      output.push(encode(opObj.rawOutput + '\n'));
+    }
+    else if (op === 'BT') { 
+      tm = [...IDENTITY]; 
+      tlm = [...IDENTITY];
+      output.push(encode(opObj.rawOutput + '\n'));
+    }
+    else if (op === 'Tm' && numArgs.length >= 6) { 
+      tm = numArgs.slice(-6) as any; 
+      tlm = [...tm];
+      output.push(encode(opObj.rawOutput + '\n'));
+    }
+    else if (op === 'Tr' && numArgs.length >= 1) {
+      currentTr = numArgs[numArgs.length - 1]!;
+      output.push(encode(opObj.rawOutput + '\n'));
+    }
+    else if ((op === 'Td' || op === 'TD') && numArgs.length >= 2) { 
+      const a = numArgs.slice(-2);
+      tlm = matMul([1,0,0,1,a[0],a[1]], tlm); 
+      tm=[...tlm];
+      output.push(encode(opObj.rawOutput + '\n'));
+    }
+    else if (op === 'T*') { 
+      tlm = matMul([1,0,0,1,0,-fontSize], tlm); 
+      tm=[...tlm];
+      output.push(encode(opObj.rawOutput + '\n'));
+    }
+    else if (op === 'Tf') {
+      const sizeArg = opObj.args.find(a => typeof a === 'number');
+      const nameArg = opObj.args.find(a => typeof a === 'object' && a.type === 'name');
+      
+      if (sizeArg !== undefined) fontSize = sizeArg;
+      currentFont = null; 
+
+      if (fontsDict && nameArg) { 
+          const fontName = nameArg.value.substring(1);
+          const fontRef = fontsDict.get(PDFName.of(fontName));
+          if (fontRef instanceof PDFRef) {
+              currentFont = await getFontMetrics(pdfDoc, fontRef, fontName);
           }
+      }
+      output.push(encode(opObj.rawOutput + '\n'));
+    }
+    else if (op === 'Do') {
+      const nameArg = opObj.args.find(a => typeof a === 'object' && a.type === 'name');
+      const name = nameArg ? nameArg.value.substring(1) : "";
+      const ref = xObjects?.get(PDFName.of(name));
+      
+      if (ref instanceof PDFRef) {
+        const xStream = pdfDoc.context.lookup(ref, PDFStream) as PDFRawStream;
+        const subtype = resolveName(xStream?.dict.get(PDFName.of('Subtype')));
+        const bounds = unitSquareBounds(ctm);
+        const overlaps = rectsOverlap(bounds, pdfRect);
+        
+        if (subtype === 'Image' && overlaps) {
+          const res = await blackOutImage(pdfDoc, ref, ctm, pdfRect);
+          redactionDebugLog.push({ text: `Image: /${name}`, op: 'Do', curX: ctm[4], curY: ctm[5], rect: { ...pdfRect }, accepted: true, reason: res.info });
+        } else if (subtype === 'Form') {
+          const formMat = xStream.dict.lookupMaybe(PDFName.of('Matrix'), PDFArray);
+          let nextCtm = ctm;
+          if (formMat) nextCtm = matMul(formMat.asArray().map(v=>(v as PDFNumber).asNumber()) as any, ctm);
+          await redactContentStream(pdfDoc, ref, pdfRect, resources, nextCtm);
+          redactionDebugLog.push({ text: `Form: /${name}`, op: 'Do', curX: ctm[4], curY: ctm[5], rect: { ...pdfRect }, accepted: overlaps, reason: overlaps ? "Recursed" : "Skipped" });
         }
       }
-      output.push(encode(m[0]));
-    } else if (m[4]) { // Matched a text-showing operator
-      const content = m[3]!, op = m[4]!;
-      if (op === "'") { tlm = matMul([1,0,0,1,0,-leading], tlm); tm=[...tlm]; }
-      else if (op === '"') { tlm = matMul([1,0,0,1,0,-leading], tlm); tm=[...tlm]; }
+      output.push(encode(opObj.rawOutput + '\n'));
+    }
+    else if (op === 'Tj' || op === 'TJ' || op === "'" || op === '"') { 
+      if (op === "'") { 
+          tlm = matMul([1,0,0,1,0,-fontSize], tlm); tm=[...tlm]; 
+          output.push(encode("T*\n")); 
+      }
+      else if (op === '"') { 
+          tlm = matMul([1,0,0,1,0,-fontSize], tlm); tm=[...tlm]; 
+          output.push(encode("T*\n")); 
+      }
 
       let localTm = [...tm] as Matrix;
-      const segs: Array<{ type:'text'|'kern', text?:string, val?:number, redacted?:boolean }> = [];
-      const process = (str: string) => {
-        const chars = parsePdfString(str);
-        let buf = "", isRed = false;
-        for (const c of chars) {
-          const trm = matMul(localTm, ctm);
-          const curX = trm[4], curY = trm[5];
+      const newTjItems: (string | number)[] = [];
+      
+      let pendingText = '';
+      let isCurrentHex = false;
+      let wasRedacted = false; 
 
-          // Approximate char bbox check
-          const charWidth = (trm[0] + trm[2]) * 0.6; // Approximation of width based on matrix
-          const charBbox = {
-              xMin: curX,
-              xMax: curX + charWidth,
-              yMin: curY,
-              yMax: curY + fontSize,
-          };
-
-          const inBox = (charBbox.xMin < pdfRect.rX + pdfRect.rW && charBbox.xMax > pdfRect.rX) &&
-                        (charBbox.yMin < pdfRect.rY + pdfRect.rH && charBbox.yMax > pdfRect.rY);
-
-          if (buf.length > 0 && inBox !== isRed) { segs.push({ type:'text', text:buf, redacted:isRed }); buf=""; }
-          isRed = inBox;
-          
-          if (inBox) {
-            buf += "0"; // Replace with junk character to remove original data
-          } else {
-            // Append original character representation for visible text
-            const v=c.value;
-            if (v===40) buf+="\\("; else if (v===41) buf+="\\)"; else if (v===92) buf+="\\\\";
-            else if (v>=32 && v<=126) buf+=String.fromCharCode(v); else buf+="\\"+v.toString(8).padStart(3,'0');
-          }
-          
-          // This width approximation is a major source of inaccuracy.
-          // A real implementation needs access to font metrics.
-          localTm = matMul([1,0,0,1,(600/1000)*fontSize,0], localTm);
+      const flushText = () => {
+        if (pendingText) { 
+           newTjItems.push(isCurrentHex ? `<${pendingText}>` : `(${pendingText})`); 
+           pendingText = ''; 
         }
-        if (buf.length > 0) segs.push({ type:'text', text:buf, redacted:isRed });
+      };
+      
+      const processString = (str: string) => {
+        const isHex = str.startsWith('<');
+        const chars = parsePdfString(str);
+        
+        for (const char of chars) {
+            let advanceWidth = fontSize * 0.6; 
+            let unitsPerEm = 1000;
+
+            if (currentFont) {
+                try {
+                    const glyph = currentFont.getGlyph(char.value);
+                    if (glyph && typeof glyph.advanceWidth === 'number' && !isNaN(glyph.advanceWidth)) {
+                        unitsPerEm = currentFont.unitsPerEm || 1000;
+                        advanceWidth = (glyph.advanceWidth / unitsPerEm) * fontSize;
+                    }
+                } catch { }
+            }
+            
+            if (isNaN(advanceWidth) || !isFinite(advanceWidth)) {
+                advanceWidth = fontSize * 0.6; 
+            }
+            
+            const trm = matMul(localTm, ctm);
+            const curX = trm[4], curY = trm[5];
+            
+            const scaleX = Math.sqrt(trm[0] * trm[0] + trm[1] * trm[1]);
+            const scaleY = Math.sqrt(trm[2] * trm[2] + trm[3] * trm[3]);
+            const actualAdvance = advanceWidth * scaleX;
+            const actualFontSize = fontSize * scaleY;
+
+            const bbox = { 
+                xMin: Math.min(curX, curX + actualAdvance), 
+                xMax: Math.max(curX, curX + actualAdvance), 
+                yMin: curY - actualFontSize * 0.3, 
+                yMax: curY + actualFontSize * 0.9 
+            };
+            
+            const inBox = rectsOverlap(bbox, pdfRect);
+
+            if (inBox) {
+                flushText();
+                const kern = - (advanceWidth / fontSize) * 1000;
+                newTjItems.push(kern);
+                wasRedacted = true;
+            } else {
+                if (pendingText && isCurrentHex !== isHex) flushText();
+                isCurrentHex = isHex;
+                pendingText += str.substring(char.start, char.start + char.len);
+            }
+            localTm = matMul([1,0,0,1,advanceWidth,0], localTm);
+        }
       };
 
-      if (op === 'TJ') {
-        const tjRe = /([\(\<][\s\S]*?[\)\>]|(-?\d+\.?\d*))/g; let item;
-        while ((item = tjRe.exec(content)) !== null) {
-          if (item[2]) { const v=parseFloat(item[2]); localTm=matMul([1,0,0,1,-v/1000*fontSize,0], localTm); segs.push({type:'kern',val:v}); }
-          else process(item[1]!);
-        }
-      } else process(content);
+      const contentRaw = opObj.args[0]?.raw || '';
 
-      const redCount = segs.filter(s=>s.redacted).length;
-      if (redCount > 0) {
-        let activeTr = currentTr; let items: string[] = [];
-        const flush = () => { if (items.length>0) output.push(encode(`[${items.join(' ')}] TJ `)); items=[]; };
-        for (const s of segs) {
-          if (s.type==='kern') items.push(s.val!.toString());
-          else {
-            const tTr = s.redacted ? 3 : currentTr; // Use invisible text mode for redacted segments
-            if (tTr !== activeTr) { flush(); activeTr=tTr; output.push(encode(`${activeTr} Tr `)); }
-            items.push(`(${s.text})`);
+      if (op === 'TJ') {
+        const tjRe = /(\((?:[^)\\]|\\.)*\)|<[0-9a-fA-F\s]*>)|(-?\d+\.?\d*)/g; 
+        let item;
+        while ((item = tjRe.exec(contentRaw)) !== null) {
+          if (item[2] !== undefined) { 
+            flushText();
+            const kernVal = parseFloat(item[2]);
+            newTjItems.push(kernVal);
+            const advance = - (kernVal / 1000) * fontSize;
+            localTm = matMul([1,0,0,1,advance,0], localTm);
+          } else if (item[1] !== undefined) { 
+            processString(item[1]);
           }
         }
-        flush(); if (activeTr!==currentTr) output.push(encode(`${currentTr} Tr `));
-        redactionDebugLog.push({ text: content.length > 20 ? content.slice(0, 20) + "..." : content, op, curX: tm[4], curY: tm[5], rect: { ...pdfRect }, accepted: true, reason: `Redacted ${redCount} segments` });
-      } else {
-        output.push(encode(m[0]));
-        redactionDebugLog.push({ text: content.length > 20 ? content.slice(0, 20) + "..." : content, op, curX: tm[4], curY: tm[5], rect: { ...pdfRect }, accepted: false, reason: "No segments in bounds" });
+      } else { 
+        processString(contentRaw);
       }
-      tm = localTm;
+
+      flushText();
+      
+      if (newTjItems.length > 0) {
+        output.push(encode(`[${newTjItems.join(' ')}] TJ\n`));
+      }
+
+      tm = localTm; 
+      
+      redactionDebugLog.push({ 
+          text: contentRaw.length > 20 ? contentRaw.slice(0, 20) + "..." : contentRaw, 
+          op, 
+          curX: tm[4], 
+          curY: tm[5], 
+          rect: { ...pdfRect }, 
+          accepted: wasRedacted, 
+          reason: wasRedacted ? `Redacted characters` : `Skipped`
+      });
+
+    } else {
+        output.push(encode(opObj.rawOutput + '\n'));
     }
-    lastPos = m.index + m[0].length;
   }
-  if (lastPos < streamStr.length) output.push(encode(streamStr.substring(lastPos)));
 
   const total = output.reduce((a,c)=>a+c.length, 0);
   const result = new Uint8Array(total); let off=0;
@@ -335,6 +511,3 @@ export const redactContentStream = async (
   stream.dict.set(PDFName.of('Filter'), PDFName.of('FlateDecode'));
   stream.dict.set(PDFName.of('Length'), PDFNumber.of(compressed.length));
 };
-
-export const redactTextInStreams = redactContentStream;
-export const redactImagesInStream = async () => {};
