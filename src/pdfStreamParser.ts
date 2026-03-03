@@ -1,7 +1,7 @@
 export interface PdfOperation {
   op: string;
   args: any[];
-  rawOutput: string;
+  rawOutput: Uint8Array;
 }
 
 function isWhitespace(cc: number) {
@@ -17,131 +17,120 @@ function isRegular(cc: number) {
   return !isWhitespace(cc) && !isDelimiter(cc);
 }
 
+const DECODER = new TextDecoder('latin1');
+
 export class PDFStreamParser {
   pos = 0;
-  constructor(public str: string) {}
+  constructor(public bytes: Uint8Array) {}
 
   skipWhitespace() {
-    while (this.pos < this.str.length && isWhitespace(this.str.charCodeAt(this.pos))) {
+    while (this.pos < this.bytes.length && isWhitespace(this.bytes[this.pos]!)) {
       this.pos++;
     }
   }
 
   nextOperation(): PdfOperation | null {
     this.skipWhitespace();
-    if (this.pos >= this.str.length) return null;
+    if (this.pos >= this.bytes.length) return null;
 
     const startPos = this.pos;
     const args: any[] = [];
-    const rawArgs: string[] = [];
 
-    while (this.pos < this.str.length) {
+    while (this.pos < this.bytes.length) {
       this.skipWhitespace();
-      if (this.pos >= this.str.length) break;
+      if (this.pos >= this.bytes.length) break;
 
-      const char = this.str[this.pos];
+      const charCode = this.bytes[this.pos]!;
       const tokenStart = this.pos;
 
       // 1. Arrays [ ... ]
-      if (char === '[') {
+      if (charCode === 0x5B) { // '['
         this.pos++;
-        let arrRaw = '[';
         let open = 1;
-        while (this.pos < this.str.length && open > 0) {
-            if (this.str[this.pos] === '(') {
+        while (this.pos < this.bytes.length && open > 0) {
+            if (this.bytes[this.pos] === 0x28) { // '('
                let sOpen = 1;
-               arrRaw += this.str[this.pos++];
-               while(this.pos < this.str.length && sOpen > 0) {
-                  if (this.str[this.pos] === '\\') {
-                     arrRaw += this.str[this.pos++] + (this.str[this.pos] || '');
-                     this.pos++;
+               this.pos++;
+               while(this.pos < this.bytes.length && sOpen > 0) {
+                  if (this.bytes[this.pos] === 0x5C) { // '\'
+                     this.pos += 2;
                      continue;
                   }
-                  if (this.str[this.pos] === '(') sOpen++;
-                  if (this.str[this.pos] === ')') sOpen--;
-                  arrRaw += this.str[this.pos++];
+                  if (this.bytes[this.pos] === 0x28) sOpen++;
+                  if (this.bytes[this.pos] === 0x29) sOpen--;
+                  this.pos++;
                }
                continue;
             }
-            if (this.str[this.pos] === '[') open++;
-            if (this.str[this.pos] === ']') open--;
-            arrRaw += this.str[this.pos];
+            if (this.bytes[this.pos] === 0x5B) open++;
+            if (this.bytes[this.pos] === 0x5D) open--;
             this.pos++;
         }
-        args.push({ type: 'array', raw: arrRaw });
-        rawArgs.push(arrRaw);
+        const arrRaw = this.bytes.slice(tokenStart, this.pos);
+        args.push({ type: 'array', rawBytes: arrRaw });
         continue;
       }
       
       // 2. Dictionaries << ... >>
-      if (char === '<' && this.str[this.pos+1] === '<') { 
+      if (charCode === 0x3C && this.bytes[this.pos+1] === 0x3C) { // '<<'
         this.pos += 2;
-        let dictRaw = '<<';
-        while(this.pos < this.str.length - 1 && !(this.str[this.pos] === '>' && this.str[this.pos+1] === '>')) {
-           dictRaw += this.str[this.pos];
+        while(this.pos < this.bytes.length - 1 && !(this.bytes[this.pos] === 0x3E && this.bytes[this.pos+1] === 0x3E)) {
            this.pos++;
         }
-        dictRaw += '>>';
         this.pos += 2;
-        args.push({ type: 'dict', raw: dictRaw });
-        rawArgs.push(dictRaw);
+        const dictRaw = this.bytes.slice(tokenStart, this.pos);
+        args.push({ type: 'dict', rawBytes: dictRaw });
         continue;
       }
 
       // 3. Hex Strings < ... >
-      if (char === '<') { 
+      if (charCode === 0x3C) { // '<'
         this.pos++;
-        let hexRaw = '<';
-        while(this.pos < this.str.length && this.str[this.pos] !== '>') {
-          hexRaw += this.str[this.pos];
+        while(this.pos < this.bytes.length && this.bytes[this.pos] !== 0x3E) {
           this.pos++;
         }
-        if (this.pos < this.str.length) { hexRaw += '>'; this.pos++; }
-        args.push({ type: 'hexstring', raw: hexRaw });
-        rawArgs.push(hexRaw);
+        if (this.pos < this.bytes.length) { this.pos++; }
+        const hexRaw = this.bytes.slice(tokenStart, this.pos);
+        args.push({ type: 'hexstring', rawBytes: hexRaw });
         continue;
       }
 
       // 4. Literal Strings ( ... )
-      if (char === '(') { 
-        let strRaw = '(';
+      if (charCode === 0x28) { // '('
         let open = 1;
         this.pos++;
-        while(this.pos < this.str.length && open > 0) {
-          if (this.str[this.pos] === '\\') {
-             strRaw += '\\' + (this.str[this.pos+1] || '');
+        while(this.pos < this.bytes.length && open > 0) {
+          if (this.bytes[this.pos] === 0x5C) { // '\'
              this.pos += 2;
              continue;
           }
-          if (this.str[this.pos] === '(') open++;
-          if (this.str[this.pos] === ')') open--;
-          strRaw += this.str[this.pos];
+          if (this.bytes[this.pos] === 0x28) open++;
+          if (this.bytes[this.pos] === 0x29) open--;
           this.pos++;
         }
-        args.push({ type: 'string', raw: strRaw });
-        rawArgs.push(strRaw);
+        const strRaw = this.bytes.slice(tokenStart, this.pos);
+        args.push({ type: 'string', rawBytes: strRaw });
         continue;
       }
 
       // 5. Names /Name
-      if (char === '/') { 
+      if (charCode === 0x2F) { // '/'
         this.pos++;
-        while(this.pos < this.str.length && isRegular(this.str.charCodeAt(this.pos))) this.pos++;
-        const nameRaw = this.str.substring(tokenStart, this.pos);
-        args.push({ type: 'name', value: nameRaw });
-        rawArgs.push(nameRaw);
+        while(this.pos < this.bytes.length && isRegular(this.bytes[this.pos]!)) this.pos++;
+        const nameBytes = this.bytes.slice(tokenStart, this.pos);
+        args.push({ type: 'name', value: DECODER.decode(nameBytes) });
         continue;
       }
 
       // 6. Numbers or Operators
-      while(this.pos < this.str.length && isRegular(this.str.charCodeAt(this.pos))) {
+      while(this.pos < this.bytes.length && isRegular(this.bytes[this.pos]!)) {
         this.pos++;
       }
-      const tokenRaw = this.str.substring(tokenStart, this.pos);
+      const tokenBytes = this.bytes.slice(tokenStart, this.pos);
+      const tokenRaw = DECODER.decode(tokenBytes);
       
       if (/^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(tokenRaw)) {
         args.push(parseFloat(tokenRaw));
-        rawArgs.push(tokenRaw);
         continue;
       }
 
@@ -150,29 +139,29 @@ export class PDFStreamParser {
       
       // Inline Image Trap Door
       if (op === 'BI') {
-         while(this.pos < this.str.length - 2) {
-           if (this.str[this.pos] === 'E' && this.str[this.pos+1] === 'I' && isWhitespace(this.str.charCodeAt(this.pos+2))) {
-              if (isWhitespace(this.str.charCodeAt(this.pos-1))) {
+         while(this.pos < this.bytes.length - 2) {
+           if (this.bytes[this.pos] === 0x45 && this.bytes[this.pos+1] === 0x49 && isWhitespace(this.bytes[this.pos+2]!)) { // 'EI'
+              if (isWhitespace(this.bytes[this.pos-1]!)) {
                  this.pos += 2; 
                  break;
               }
            }
            this.pos++;
          }
-         return { op: 'INLINE_IMAGE', args: [], rawOutput: this.str.substring(startPos, this.pos) };
+         return { op: 'INLINE_IMAGE', args: [], rawOutput: this.bytes.slice(startPos, this.pos) };
       }
 
       return {
          op,
          args,
-         rawOutput: this.str.substring(startPos, this.pos)
+         rawOutput: this.bytes.slice(startPos, this.pos)
       };
     }
     
     return {
        op: 'EOF',
        args,
-       rawOutput: this.str.substring(startPos, this.pos)
+       rawOutput: this.bytes.slice(startPos, this.pos)
     };
   }
 }

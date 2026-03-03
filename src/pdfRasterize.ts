@@ -1,5 +1,5 @@
 import type { PDFDocumentProxy } from 'pdfjs-dist';
-import type { PDFJSModule, PDFLibModule } from './redactor'; // Import types from redactor.tsx
+import type { PDFJSModule, PDFLibModule } from './redactor.js'; // Import types from redactor.tsx
 
 /**
  * Renders every page of pdfjsDoc to a JPEG canvas at the given scale and

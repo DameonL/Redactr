@@ -121,6 +121,8 @@ import * as pdfjsLib from 'pdfjs-dist';
 
 // ... (existing interfaces)
 
+type Matrix = [number, number, number, number, number, number];
+
 export function PdfDeepInspector({ pdfProxy, pageNumber }: { pdfProxy: any; pageNumber: number }) {
   const [log, setLog] = useState<any[]>([]);
 
@@ -131,18 +133,18 @@ export function PdfDeepInspector({ pdfProxy, pageNumber }: { pdfProxy: any; page
       const { OPS } = pdfjsLib;
       const results: any[] = [];
 
-      let ctm = [1, 0, 0, 1, 0, 0];
-      let tm = [1, 0, 0, 1, 0, 0];
-      let tlm = [1, 0, 0, 1, 0, 0];
-      const gStack: any[] = [];
+      let ctm: Matrix = [1, 0, 0, 1, 0, 0];
+      let tm: Matrix = [1, 0, 0, 1, 0, 0];
+      let tlm: Matrix = [1, 0, 0, 1, 0, 0];
+      const gStack: Matrix[] = [];
 
-      const matMul = (m: number[], c: number[]) => [
-        m[0] * c[0] + m[1] * c[2],
-        m[0] * c[1] + m[1] * c[3],
-        m[2] * c[0] + m[3] * c[2],
-        m[2] * c[1] + m[3] * c[3],
-        m[4] * c[0] + m[5] * c[2] + c[4],
-        m[4] * c[1] + m[5] * c[3] + c[5],
+      const matMul = (m: Matrix, c: Matrix): Matrix => [
+        (m[0] * c[0]) + (m[1] * c[2]),
+        (m[0] * c[1]) + (m[1] * c[3]),
+        (m[2] * c[0]) + (m[3] * c[2]),
+        (m[2] * c[1]) + (m[3] * c[3]),
+        (m[4] * c[0]) + (m[5] * c[2]) + c[4],
+        (m[4] * c[1]) + (m[5] * c[3]) + c[5],
       ];
 
       for (let i = 0; i < opList.fnArray.length; i++) {
@@ -150,10 +152,10 @@ export function PdfDeepInspector({ pdfProxy, pageNumber }: { pdfProxy: any; page
         const args = opList.argsArray[i];
 
         if (fn === OPS.save) gStack.push([...ctm]);
-        else if (fn === OPS.transform) ctm = matMul(args as number[], ctm);
+        else if (fn === OPS.transform) ctm = matMul(args as unknown as Matrix, ctm);
         else if (fn === OPS.beginText) { tm = [1, 0, 0, 1, 0, 0]; tlm = [1, 0, 0, 1, 0, 0]; }
-        else if (fn === OPS.setTextMatrix) { tm = args as number[]; tlm = [...tm]; }
-        else if (fn === OPS.moveText) { tlm = matMul([1, 0, 0, 1, args[0], args[1]], tlm); tm = [...tlm]; } else if (fn === OPS.restore) ctm = gStack.pop() || [1, 0, 0, 1, 0, 0];
+        else if (fn === OPS.setTextMatrix) { tm = args as unknown as Matrix; tlm = [...tm]; }
+        else if (fn === OPS.moveText) { tlm = matMul([1, 0, 0, 1, args[0] as number, args[1] as number], tlm); tm = [...tlm]; } else if (fn === OPS.restore) ctm = gStack.pop() || [1, 0, 0, 1, 0, 0];
         else if (fn === OPS.showText || fn === OPS.showSpacedText) {
           const trm = matMul(tm, ctm);
           const glyphs = args[0];

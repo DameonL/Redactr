@@ -3,7 +3,7 @@ import * as fontkit from 'fontkit';
 import afm from "afm";
 import { PDFStreamParser, type PdfOperation } from './pdfStreamParser.js';
 import type { PDFLibModule } from './redactor.js';
-import { PDFName } from "pdf-lib";
+import type { PDFDocument, PDFArray, PDFName, PDFDict, PDFRef, PDFRawStream, PDFStream, PDFNumber } from "pdf-lib";
 
 export interface PdfRect {
   rX: number;
@@ -70,13 +70,14 @@ const rectsOverlap = (b: { xMin: number, xMax: number, yMin: number, yMax: numbe
 
 const resolveName = (obj: any): string => {
   if (!obj) return "";
-  if (obj instanceof PDFName) return obj.asString().replace(/^\//, '');
+  if (typeof obj.asString === 'function') return (obj as PDFName).asString().replace(/^\//, '');
   return String(obj).replace(/^\//, '');
 };
 
-function parsePdfString(s: string) {
+function parsePdfString(bytes: Uint8Array) {
   const chars: Array<{ start: number; len: number; value: number }> = [];
-  if (s.startsWith('<')) {
+  if (bytes[0] === 0x3C) { // '<'
+    const s = LATIN1.decode(bytes);
     const hex = s.slice(1, -1).replace(/\s/g, '');
     let pos = 1;
     for (let i = 0; i < hex.length; i += 2) {
@@ -88,23 +89,26 @@ function parsePdfString(s: string) {
       chars.push({ start, len: pos - start, value: parseInt(valStr.padEnd(2, '0'), 16) });
     }
   } else {
-    for (let i = 1; i < s.length - 1; i++) {
+    for (let i = 1; i < bytes.length - 1; i++) {
       let len = 1;
-      let val = s.charCodeAt(i);
-      if (s[i] === '\\') {
-        const next = s[i + 1] || '';
-        if (/[0-7]/.test(next)) {
-          const oct = (s.substr(i + 1, 3).match(/[0-7]+/))![0];
+      let val = bytes[i]!;
+      if (val === 0x5C) { // '\'
+        const next = bytes[i + 1] || 0;
+        if (next >= 0x30 && next <= 0x37) { // 0-7
+          const sub = bytes.slice(i + 1, i + 4);
+          const sSub = LATIN1.decode(sub);
+          const m = sSub.match(/[0-7]+/);
+          const oct = m ? m[0] : "";
           len = 1 + oct.length;
           val = parseInt(oct, 8);
         } else {
           len = 2;
-          if (next === 'n') val = 10;
-          else if (next === 'r') val = 13;
-          else if (next === 't') val = 9;
-          else if (next === 'b') val = 8;
-          else if (next === 'f') val = 12;
-          else val = next.charCodeAt(0);
+          if (next === 0x6E) val = 10; // n
+          else if (next === 0x72) val = 13; // r
+          else if (next === 0x74) val = 9; // t
+          else if (next === 0x62) val = 8; // b
+          else if (next === 0x66) val = 12; // f
+          else val = next;
         }
       }
       chars.push({ start: i, len, value: val });
@@ -114,13 +118,21 @@ function parsePdfString(s: string) {
   return chars;
 }
 
-const blackOutImage = async (PDFLib: PDFLibModule, pdfDoc: InstanceType<PDFLibModule['PDFDocument']>, ref: InstanceType<PDFLibModule['PDFRef']>, ctm: Matrix, pdfRect: PdfRect): Promise<{ surgical: boolean, info: string }> => {
-  const stream = pdfDoc.context.lookup(ref, PDFLib.PDFStream) as InstanceType<PDFLibModule['PDFRawStream']>;
-  const w = (stream.dict.lookupMaybe(PDFLib.PDFName.of('Width'), PDFLib.PDFNumber))?.asNumber() ?? 8;
-  const h = (stream.dict.lookupMaybe(PDFLib.PDFName.of('Height'), PDFLib.PDFNumber))?.asNumber() ?? 8;
+const concatUint8Arrays = (arrays: Uint8Array[]) => {
+  const total = arrays.reduce((a, c) => a + c.length, 0);
+  const result = new Uint8Array(total);
+  let off = 0;
+  for (const c of arrays) { result.set(c, off); off += c.length; }
+  return result;
+};
+
+const blackOutImage = async (PDFLib: PDFLibModule, pdfDoc: PDFDocument, ref: PDFRef, ctm: Matrix, pdfRect: PdfRect): Promise<{ surgical: boolean, info: string }> => {
+  const stream = pdfDoc.context.lookup(ref, PDFLib.PDFStream) as PDFRawStream;
+  const w = (stream.dict.lookupMaybe(PDFLib.PDFName.of('Width'), PDFLib.PDFNumber) as PDFNumber | undefined)?.asNumber() ?? 8;
+  const h = (stream.dict.lookupMaybe(PDFLib.PDFName.of('Height'), PDFLib.PDFNumber) as PDFNumber | undefined)?.asNumber() ?? 8;
   const filter = stream.dict.get(PDFLib.PDFName.of('Filter'));
   const csObj = stream.dict.lookup(PDFLib.PDFName.of('ColorSpace'));
-  const bpc = stream.dict.lookupMaybe(PDFLib.PDFName.of('BitsPerComponent'), PDFLib.PDFNumber)?.asNumber() ?? 8;
+  const bpc = (stream.dict.lookupMaybe(PDFLib.PDFName.of('BitsPerComponent'), PDFLib.PDFNumber) as PDFNumber | undefined)?.asNumber() ?? 8;
   const cs = csObj instanceof PDFLib.PDFArray ? resolveName(csObj.get(0)) : resolveName(csObj);
 
   const p1 = inverseTransform(ctm, pdfRect.rX, pdfRect.rY);
@@ -139,14 +151,14 @@ const blackOutImage = async (PDFLib: PDFLibModule, pdfDoc: InstanceType<PDFLibMo
   const ctx = canvas.getContext('2d')!;
 
   let bytes = stream.contents;
-  if (filter === PDFName.of('FlateDecode') || (filter instanceof PDFArray && filter.asArray().some(f => f === PDFName.of('FlateDecode')))) {
+  if (filter === PDFLib.PDFName.of('FlateDecode') || (filter instanceof PDFLib.PDFArray && (filter as PDFArray).asArray().some((f: any) => f === PDFLib.PDFName.of('FlateDecode')))) {
     try { bytes = pako.inflate(bytes); } catch { return { surgical: false, info: "Inflation failed" }; }
   }
 
   let loaded = false;
-  if (filter === PDFName.of('DCTDecode')) {
+  if (filter === PDFLib.PDFName.of('DCTDecode')) {
     try {
-      const img = new Image(); img.src = URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }));
+      const img = new Image(); img.src = URL.createObjectURL(new Blob([bytes as any], { type: 'image/jpeg' }));
       await new Promise((r, rej) => { img.onload = r; img.onerror = rej; });
       ctx.drawImage(img, 0, 0); URL.revokeObjectURL(img.src); loaded = true;
     } catch { }
@@ -166,7 +178,8 @@ const blackOutImage = async (PDFLib: PDFLibModule, pdfDoc: InstanceType<PDFLibMo
   if (!loaded) ctx.fillRect(0, 0, w, h);
   else ctx.fillRect(ixMin * w, (1 - iyMax) * h, (ixMax - ixMin) * w, (iyMax - iyMin) * h);
 
-  const out = new Uint8Array(await fetch(canvas.toDataURL('image/jpeg', 0.9)).then(r => r.arrayBuffer()));
+  const buf = await fetch(canvas.toDataURL('image/jpeg', 0.9)).then(r => r.arrayBuffer());
+  const out = new Uint8Array(buf);
   (stream as any).contents = out;
   stream.dict.set(PDFLib.PDFName.of('Filter'), PDFLib.PDFName.of('DCTDecode'));
   stream.dict.set(PDFLib.PDFName.of('ColorSpace'), PDFLib.PDFName.of('DeviceRGB'));
@@ -206,7 +219,7 @@ class AfmFontWrapper implements CustomFontMetrics {
 
 const fontCache = new Map<string, CustomFontMetrics | null>();
 
-async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: InstanceType<PDFLibModule['PDFDocument']>, fontRef: InstanceType<PDFLibModule['PDFRef']>, fontName: string): Promise<CustomFontMetrics | null> {
+async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: PDFDocument, fontRef: PDFRef, fontName: string): Promise<CustomFontMetrics | null> {
   const refStr = fontRef.toString();
   if (fontCache.has(refStr)) return fontCache.get(refStr) || null;
 
@@ -232,7 +245,7 @@ async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: InstanceType<PDFLibM
       return null;
     }
 
-    const fontStream = pdfDoc.context.lookup(fontStreamRef, PDFLib.PDFStream) as InstanceType<PDFLibModule['PDFRawStream']>;
+    const fontStream = pdfDoc.context.lookup(fontStreamRef, PDFLib.PDFStream) as PDFRawStream;
     let fontBytes: Uint8Array = fontStream.contents;
 
     if (fontStream.dict.has(PDFLib.PDFName.of('Filter')) && fontStream.dict.get(PDFLib.PDFName.of('Filter')) === PDFLib.PDFName.of('FlateDecode')) {
@@ -243,7 +256,7 @@ async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: InstanceType<PDFLibM
       }
     }
 
-    const fkFont = fontkit.create(fontBytes);
+    const fkFont = fontkit.create(fontBytes as any) as any;
 
     const fontWrapper: CustomFontMetrics = {
       unitsPerEm: fkFont.unitsPerEm || 1000,
@@ -264,22 +277,21 @@ async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: InstanceType<PDFLibM
 
 export const redactContentStream = async (
   PDFLib: PDFLibModule,
-  pdfDoc: InstanceType<PDFLibModule['PDFDocument']>,
-  streamRef: InstanceType<PDFLibModule['PDFRef']>,
+  pdfDoc: PDFDocument,
+  streamRef: PDFRef,
   pdfRect: PdfRect,
-  resourcesDict?: InstanceType<PDFLibModule['PDFDict']>,
+  resourcesDict?: PDFDict,
   initialCtm: Matrix = [...IDENTITY]
 ): Promise<void> => {
-  const stream = pdfDoc.context.lookup(streamRef, PDFLib.PDFStream) as InstanceType<PDFLibModule['PDFRawStream']>;
+  const stream = pdfDoc.context.lookup(streamRef, PDFLib.PDFStream) as PDFRawStream;
   if (!stream) return;
 
   let bytes = stream.contents;
   const filter = stream.dict.get(PDFLib.PDFName.of('Filter'));
-  if (filter === PDFLib.PDFName.of('FlateDecode') || (filter instanceof PDFLib.PDFArray && filter.asArray().some(f => f === PDFLib.PDFName.of('FlateDecode')))) {
+  if (filter === PDFLib.PDFName.of('FlateDecode') || (filter instanceof PDFLib.PDFArray && (filter as PDFArray).asArray().some((f: any) => f === PDFLib.PDFName.of('FlateDecode')))) {
     try { bytes = pako.inflate(bytes); } catch { return; }
   }
 
-  const streamStr = LATIN1.decode(bytes);
   const resources = stream.dict.lookupMaybe(PDFLib.PDFName.of('Resources'), PDFLib.PDFDict) ?? resourcesDict;
   const xObjects = resources?.lookupMaybe(PDFLib.PDFName.of('XObject'), PDFLib.PDFDict);
   const fontsDict = resources?.lookupMaybe(PDFLib.PDFName.of('Font'), PDFLib.PDFDict);
@@ -294,12 +306,13 @@ export const redactContentStream = async (
   let currentTr = 0;
   let currentFont: CustomFontMetrics | null = null;
 
-  const parser = new PDFStreamParser(streamStr);
+  const parser = new PDFStreamParser(bytes);
   let opObj: PdfOperation | null;
 
   while ((opObj = parser.nextOperation()) !== null) {
     if (opObj.op === 'EOF' || opObj.op === 'INLINE_IMAGE') {
-      output.push(encode(opObj.rawOutput + '\n'));
+      output.push(opObj.rawOutput);
+      output.push(encode('\n'));
       continue;
     }
 
@@ -308,42 +321,50 @@ export const redactContentStream = async (
 
     if (op === 'q') {
       gStack.push({ ctm: [...ctm], tr: currentTr });
-      output.push(encode(opObj.rawOutput + '\n'));
+      output.push(opObj.rawOutput);
+      output.push(encode('\n'));
     }
     else if (op === 'Q') {
       const s = gStack.pop() || { ctm: [...initialCtm], tr: 0 };
       ctm = s.ctm;
       currentTr = s.tr;
-      output.push(encode(opObj.rawOutput + '\n'));
+      output.push(opObj.rawOutput);
+      output.push(encode('\n'));
     }
     else if (op === 'cm' && numArgs.length >= 6) {
       ctm = matMul(numArgs.slice(-6) as any, ctm);
-      output.push(encode(opObj.rawOutput + '\n'));
+      output.push(opObj.rawOutput);
+      output.push(encode('\n'));
     }
     else if (op === 'BT') {
       tm = [...IDENTITY];
       tlm = [...IDENTITY];
-      output.push(encode(opObj.rawOutput + '\n'));
+      output.push(opObj.rawOutput);
+      output.push(encode('\n'));
     }
     else if (op === 'Tm' && numArgs.length >= 6) {
       tm = numArgs.slice(-6) as any;
       tlm = [...tm];
-      output.push(encode(opObj.rawOutput + '\n'));
+      output.push(opObj.rawOutput);
+      output.push(encode('\n'));
     }
     else if (op === 'Tr' && numArgs.length >= 1) {
       currentTr = numArgs[numArgs.length - 1]!;
-      output.push(encode(opObj.rawOutput + '\n'));
+      output.push(opObj.rawOutput);
+      output.push(encode('\n'));
     }
     else if ((op === 'Td' || op === 'TD') && numArgs.length >= 2) {
       const a = numArgs.slice(-2);
-      tlm = matMul([1, 0, 0, 1, a[0], a[1]], tlm);
+      tlm = matMul([1, 0, 0, 1, a[0] as number, a[1] as number], tlm);
       tm = [...tlm];
-      output.push(encode(opObj.rawOutput + '\n'));
+      output.push(opObj.rawOutput);
+      output.push(encode('\n'));
     }
     else if (op === 'T*') {
       tlm = matMul([1, 0, 0, 1, 0, -fontSize], tlm);
       tm = [...tlm];
-      output.push(encode(opObj.rawOutput + '\n'));
+      output.push(opObj.rawOutput);
+      output.push(encode('\n'));
     }
     else if (op === 'Tf') {
       const sizeArg = opObj.args.find(a => typeof a === 'number');
@@ -358,15 +379,17 @@ export const redactContentStream = async (
         if (fontRef instanceof PDFLib.PDFRef) {
           currentFont = await getFontMetrics(PDFLib, pdfDoc, fontRef, fontName);
         }
-      } output.push(encode(opObj.rawOutput + '\n'));
+      } 
+      output.push(opObj.rawOutput);
+      output.push(encode('\n'));
     }
     else if (op === 'Do') {
       const nameArg = opObj.args.find(a => typeof a === 'object' && a.type === 'name');
       const name = nameArg ? nameArg.value.substring(1) : "";
-      const ref = xObjects?.get(PDFName.of(name));
+      const ref = xObjects?.get(PDFLib.PDFName.of(name));
 
       if (ref instanceof PDFLib.PDFRef) {
-        const xStream = pdfDoc.context.lookup(ref, PDFLib.PDFStream) as InstanceType<PDFLibModule['PDFRawStream']>;
+        const xStream = pdfDoc.context.lookup(ref, PDFLib.PDFStream) as PDFRawStream;
         const subtype = resolveName(xStream?.dict.get(PDFLib.PDFName.of('Subtype')));
         const bounds = unitSquareBounds(ctm);
         const overlaps = rectsOverlap(bounds, pdfRect);
@@ -377,41 +400,40 @@ export const redactContentStream = async (
         } else if (subtype === 'Form') {
           const formMat = xStream.dict.lookupMaybe(PDFLib.PDFName.of('Matrix'), PDFLib.PDFArray);
           let nextCtm = ctm;
-          if (formMat) nextCtm = matMul(formMat.asArray().map(v => (v as InstanceType<PDFLibModule['PDFNumber']>).asNumber()) as any, ctm);
+          if (formMat) nextCtm = matMul((formMat as PDFArray).asArray().map((v: any) => (v as PDFNumber).asNumber()) as any, ctm);
           await redactContentStream(PDFLib, pdfDoc, ref, pdfRect, resources, nextCtm);
           redactionDebugLog.push({ text: `Form: /${name}`, op: 'Do', curX: ctm[4], curY: ctm[5], rect: { ...pdfRect }, accepted: overlaps, reason: overlaps ? "Recursed" : "Skipped" });
         }
       }
-      output.push(encode(opObj.rawOutput + '\n'));
+      output.push(opObj.rawOutput);
+      output.push(encode('\n'));
     }
     else if (op === 'Tj' || op === 'TJ' || op === "'" || op === '"') {
-      if (op === "'") {
-        tlm = matMul([1, 0, 0, 1, 0, -fontSize], tlm); tm = [...tlm];
-        output.push(encode("T*\n"));
-      }
-      else if (op === '"') {
-        tlm = matMul([1, 0, 0, 1, 0, -fontSize], tlm); tm = [...tlm];
-        output.push(encode("T*\n"));
-      }
-
       let localTm = [...tm] as Matrix;
-      const newTjItems: (string | number)[] = [];
+      const newTjItems: Uint8Array[] = [];
 
-      let pendingText = '';
-      let isCurrentHex = false;
+      let pendingBytes: Uint8Array[] = [];
       let wasRedacted = false;
+      let isCurrentHex = false;
 
       const flushText = () => {
-        if (pendingText) {
-          newTjItems.push(isCurrentHex ? `<${pendingText}>` : `(${pendingText})`);
-          pendingText = '';
+        if (pendingBytes.length > 0) {
+          const content = concatUint8Arrays(pendingBytes);
+          if (isCurrentHex) {
+            newTjItems.push(concatUint8Arrays([encode('<'), content, encode('>')]));
+          } else {
+            newTjItems.push(concatUint8Arrays([encode('('), content, encode(')')]));
+          }
+          pendingBytes = [];
         }
       };
 
-      const processString = (str: string) => {
-        const isHex = str.startsWith('<');
-        const chars = parsePdfString(str);
+      const processString = (strBytes: Uint8Array) => {
+        const isHex = strBytes[0] === 0x3C; // '<'
+        if (pendingBytes.length > 0 && isCurrentHex !== isHex) flushText();
+        isCurrentHex = isHex;
 
+        const chars = parsePdfString(strBytes);
         for (const char of chars) {
           let advanceWidth = fontSize * 0.6;
           let unitsPerEm = 1000;
@@ -450,47 +472,67 @@ export const redactContentStream = async (
           if (inBox) {
             flushText();
             const kern = - (advanceWidth / fontSize) * 1000;
-            newTjItems.push(kern);
+            newTjItems.push(encode(kern.toFixed(3)));
             wasRedacted = true;
           } else {
-            if (pendingText && isCurrentHex !== isHex) flushText();
-            isCurrentHex = isHex;
-            pendingText += str.substring(char.start, char.start + char.len);
+            pendingBytes.push(strBytes.slice(char.start, char.start + char.len));
           }
           localTm = matMul([1, 0, 0, 1, advanceWidth, 0], localTm);
         }
       };
 
-      const contentRaw = opObj.args[0]?.raw || '';
-
       if (op === 'TJ') {
-        const tjRe = /(\((?:[^)\\]|\\.)*\)|<[0-9a-fA-F\s]*>)|(-?\d+\.?\d*)/g;
-        let item;
-        while ((item = tjRe.exec(contentRaw)) !== null) {
-          if (item[2] !== undefined) {
-            flushText();
-            const kernVal = parseFloat(item[2]);
-            newTjItems.push(kernVal);
-            const advance = - (kernVal / 1000) * fontSize;
-            localTm = matMul([1, 0, 0, 1, advance, 0], localTm);
-          } else if (item[1] !== undefined) {
-            processString(item[1]);
-          }
+        const tjItems = opObj.args.find(a => typeof a === 'object' && a.type === 'array');
+        if (tjItems) {
+            const tjParser = new PDFStreamParser(tjItems.rawBytes.slice(1, -1));
+            const itemOp = tjParser.nextOperation();
+            if (itemOp) {
+                for (const arg of itemOp.args) {
+                    if (typeof arg === 'number') {
+                        flushText();
+                        newTjItems.push(encode(arg.toString()));
+                        const advance = - (arg / 1000) * fontSize;
+                        localTm = matMul([1, 0, 0, 1, advance, 0], localTm);
+                    } else if (typeof arg === 'object' && (arg.type === 'string' || arg.type === 'hexstring')) {
+                        processString(arg.rawBytes);
+                    }
+                }
+            }
         }
       } else {
-        processString(contentRaw);
+        if (op === "'") {
+            tlm = matMul([1, 0, 0, 1, 0, -fontSize], tlm); tm = [...tlm];
+            localTm = [...tm];
+        } else if (op === '"') {
+            tlm = matMul([1, 0, 0, 1, 0, -fontSize], tlm); tm = [...tlm];
+            localTm = [...tm];
+        }
+        const strArg = opObj.args.find(a => typeof a === 'object' && (a.type === 'string' || a.type === 'hexstring'));
+        if (strArg) processString(strArg.rawBytes);
       }
 
       flushText();
 
-      if (newTjItems.length > 0) {
-        output.push(encode(`[${newTjItems.join(' ')}] TJ\n`));
+      if (wasRedacted) {
+          if (op === "'" || op === '"') output.push(encode("T*\n"));
+          if (newTjItems.length > 0) {
+            output.push(encode('['));
+            for (let i = 0; i < newTjItems.length; i++) {
+                output.push(newTjItems[i]!);
+                if (i < newTjItems.length - 1) output.push(encode(' '));
+            }
+            output.push(encode('] TJ\n'));
+          }
+      } else {
+          output.push(opObj.rawOutput);
+          output.push(encode('\n'));
       }
 
       tm = localTm;
 
+      const debugText = LATIN1.decode(opObj.rawOutput);
       redactionDebugLog.push({
-        text: contentRaw.length > 20 ? contentRaw.slice(0, 20) + "..." : contentRaw,
+        text: debugText.length > 20 ? debugText.slice(0, 20) + "..." : debugText,
         op,
         curX: tm[4],
         curY: tm[5],
@@ -500,13 +542,12 @@ export const redactContentStream = async (
       });
 
     } else {
-      output.push(encode(opObj.rawOutput + '\n'));
+      output.push(opObj.rawOutput);
+      output.push(encode('\n'));
     }
   }
 
-  const total = output.reduce((a, c) => a + c.length, 0);
-  const result = new Uint8Array(total); let off = 0;
-  for (const c of output) { result.set(c, off); off += c.length; }
+  const result = concatUint8Arrays(output);
   const compressed = pako.deflate(result);
   (stream as any).contents = compressed;
   stream.dict.set(PDFLib.PDFName.of('Filter'), PDFLib.PDFName.of('FlateDecode'));

@@ -1,4 +1,5 @@
 import type { PDFDocumentProxy } from 'pdfjs-dist';
+import type { PDFDocument, PDFArray, PDFName, PDFDict, PDFRef } from 'pdf-lib';
 import { h, type TargetedEvent, type TargetedMouseEvent } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import styles from "./assets/redactor.module.css";
@@ -60,9 +61,9 @@ const Redactor = () => {
   const renderPage = async (
     pageNum: number,
     pdfjsLib: PDFJSModule,
-    PDFDocument: PDFLibModule['PDFDocument'],
+    PDFDocumentClass: PDFLibModule['PDFDocument'],
     pdfjsDocument: PDFDocumentProxy,
-    pdfLibDoc: InstanceType<typeof PDFLibModule['PDFDocument']>,
+    pdfLibDoc: PDFDocument,
     overlayRect?: { x: number; y: number; width: number; height: number } | null
   ) => {
     if (renderTaskRef.current || !pdfjsDocument || !canvasRef.current || !pdfLibDoc) return;
@@ -203,22 +204,22 @@ const Redactor = () => {
     redactionDebugLog.length = 0;
 
     try {
-      const { PDFArray, PDFName, PDFDict, PDFRef, rgb } = loadedPdfLib;
+      const { PDFArray: PDFArrayCls, PDFName: PDFNameCls, PDFDict: PDFDictCls, PDFRef: PDFRefCls, rgb } = loadedPdfLib;
       const pdfPage = pdfDoc.getPage(currentPageNum - 1);
-      const contents = pdfPage.node.lookup(PDFName.of('Contents'));
+      const contents = pdfPage.node.lookup(PDFNameCls.of('Contents'));
       const contentRefs: PDFRef[] = [];
 
-      if (contents instanceof PDFArray) {
+      if (contents instanceof PDFArrayCls) {
         for (let i = 0; i < contents.size(); i++) {
           const ref = contents.get(i);
-          if (ref instanceof PDFRef) contentRefs.push(ref);
+          if (ref instanceof PDFRefCls) contentRefs.push(ref);
         }
       } else {
-        const ref = pdfPage.node.get(PDFName.of('Contents'));
-        if (ref instanceof PDFRef) contentRefs.push(ref);
+        const ref = pdfPage.node.get(PDFNameCls.of('Contents'));
+        if (ref instanceof PDFRefCls) contentRefs.push(ref);
       }
 
-      const pageResources = pdfPage.node.lookupMaybe(PDFName.of('Resources'), PDFDict);
+      const pageResources = pdfPage.node.lookupMaybe(PDFNameCls.of('Resources'), PDFDictCls);
 
       for (const ref of contentRefs) {
         await redactContentStream(loadedPdfLib, pdfDoc, ref, pdfRect, pageResources);
@@ -238,7 +239,7 @@ const Redactor = () => {
       pdfDoc.setKeywords([]);
       pdfDoc.setProducer('Redactr');
       pdfDoc.setCreator('Redactr');
-      pdfDoc.catalog.delete(PDFName.of('Metadata'));
+      pdfDoc.catalog.delete(PDFNameCls.of('Metadata'));
 
       const newBytes = await pdfDoc.save({ useObjectStreams: false });
       setPdfBytes(newBytes);
