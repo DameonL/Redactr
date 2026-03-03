@@ -11,14 +11,20 @@ type Matrix = [number, number, number, number, number, number];
 const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
 const LATIN1 = new TextDecoder('latin1');
 
-// Multiply two CTMs: result = current × incoming
+// Multiply two CTMs: result = current × incoming (concatenation)
+// CTM is [a, b, c, d, e, f]
+// Corresponds to matrix:
+//   a b 0
+//   c d 0
+//   e f 1
+// Result = c x m
 const matMul = (c: Matrix, m: Matrix): Matrix => [
-  c[0] * m[0] + c[2] * m[1],
-  c[1] * m[0] + c[3] * m[1],
-  c[0] * m[2] + c[2] * m[3],
-  c[1] * m[2] + c[3] * m[3],
-  c[0] * m[4] + c[2] * m[5] + c[4],
-  c[1] * m[4] + c[3] * m[5] + c[5],
+  c[0] * m[0] + c[1] * m[2],         // a
+  c[0] * m[1] + c[1] * m[3],         // b
+  c[2] * m[0] + c[3] * m[2],         // c
+  c[2] * m[1] + c[3] * m[3],         // d
+  c[4] * m[0] + c[5] * m[2] + m[4],  // e
+  c[4] * m[1] + c[5] * m[3] + m[5],  // f
 ];
 
 // Axis-aligned bounding box of the unit square [0,1]×[0,1] mapped by ctm.

@@ -127,12 +127,19 @@ export function PdfDeepInspector({ pdfProxy, pageNumber }: { pdfProxy: any; page
       const { OPS } = (window as any).pdfjsLib;
       const results: any[] = [];
       let currentMatrix = [1, 0, 0, 1, 0, 0];
+      let tlm = [1, 0, 0, 1, 0, 0];
 
       for (let i = 0; i < opList.fnArray.length; i++) {
         const fn = opList.fnArray[i];
         const args = opList.argsArray[i];
-        if (fn === OPS.setTextMatrix) currentMatrix = args[0];
-        if (fn === OPS.showText || fn === OPS.showSpacedText) {
+        if (fn === OPS.setTextMatrix) {
+          currentMatrix = args[0];
+          tlm = [...currentMatrix];
+        } else if (fn === OPS.moveText || fn === OPS.moveTextSetLeading) {
+          tlm[4] += args[0];
+          tlm[5] += args[1];
+          currentMatrix = [...tlm];
+        } else if (fn === OPS.showText || fn === OPS.showSpacedText) {
           const glyphs = args[0];
           const text = Array.isArray(glyphs)
             ? glyphs.map((g: any) => (typeof g === 'object' && g ? (g.unicode || '') : '')).join('')

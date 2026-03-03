@@ -8,99 +8,258 @@ export interface PdfRect {
   rH: number;
 }
 
-// latin1 gives a guaranteed 1:1 byte-to-character mapping for any byte value
-// 0-255.  Using UTF-8 (the default) would collapse multi-byte sequences such
-// as \xc3\xa9 into a single character, causing string indices to diverge from
-// byte indices and so zeroing the wrong bytes.
+export interface RedactionLogEntry {
+  text: string;
+  op: string;
+  curX: number;
+  curY: number;
+  rect: PdfRect;
+  accepted: boolean;
+  reason: string;
+}
+
+export const redactionDebugLog: RedactionLogEntry[] = [];
+
 const LATIN1 = new TextDecoder('latin1');
+const encode = (s: string) => {
+  const arr = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) arr[i] = s.charCodeAt(i);
+  return arr;
+};
 
-/**
- * Neutralizes all text-drawing operators (Tj/TJ) in a PDF content stream
- * byte array whose preceding Tm Y-coordinate falls within pdfRect.
- *
- * pdfRect must be in PDF user-space (origin bottom-left, units = points).
- * No coordinate conversion is performed here.
- *
- * For Tj/TJ string operands the content bytes are zeroed and the operator is
- * replaced with "n " (PDF no-op) so the PDF engine skips the draw call.
- * For TJ array operands each sub-string inside the array is zeroed.
- */
-export const surgicalStrip = (data: Uint8Array, pdfRect: PdfRect): Uint8Array => {
-  const result = new Uint8Array(data);
-  const streamString = LATIN1.decode(data);
+type Matrix = [number, number, number, number, number, number];
+const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
 
-  // 2-point buffer for floating-point rounding near the selection boundary
-  const yMin = pdfRect.rY - 2;
-  const yMax = pdfRect.rY + pdfRect.rH + 2;
+const matMul = (c: Matrix, m: Matrix): Matrix => [
+  c[0] * m[0] + c[1] * m[2],
+  c[0] * m[1] + c[1] * m[3],
+  c[2] * m[0] + c[3] * m[2],
+  c[2] * m[1] + c[3] * m[3],
+  c[4] * m[0] + c[5] * m[2] + m[4],
+  c[4] * m[1] + c[5] * m[3] + m[5],
+];
 
-  // Collect all Tm operators with their string positions and Y values.
-  // Tm format: a b c d e f Tm  (f = y-coordinate in PDF user space)
-  //
-  // Number pattern: (-?\d+\.?\d*|-?\.\d+)
-  //   • -?\d+\.?\d*  handles  1  1.  1.0  100.5  (trailing-dot and normal)
-  //   • -?\.\d+      handles  .5  .25          (leading-dot, no integer part)
-  const NUM = '(-?\\d+\\.?\\d*|-?\\.\\d+)';
-  const tmRegex = new RegExp(`${NUM}\\s+${NUM}\\s+${NUM}\\s+${NUM}\\s+${NUM}\\s+${NUM}\\s+Tm`, 'g');
-
-  const tmMatches: Array<{ index: number; endIndex: number; y: number }> = [];
-  let m: RegExpExecArray | null;
-  while ((m = tmRegex.exec(streamString)) !== null) {
-    // Groups: 1=a 2=b 3=c 4=d 5=e 6=f  (each group is one of the two alternatives)
-    tmMatches.push({ index: m.index, endIndex: m.index + m[0].length, y: parseFloat(m[6]!) });
+function parsePdfString(s: string) {
+  const chars: Array<{ start: number; len: number; value: number }> = [];
+  if (s.startsWith('<')) {
+    const hex = s.slice(1, -1).replace(/\s/g, '');
+    let currentPos = 1;
+    let hexIdx = 0;
+    while (hexIdx < hex.length) {
+      while (currentPos < s.length && !/[0-9a-fA-F]/.test(s[currentPos]!)) currentPos++;
+      const start = currentPos;
+      let valStr = "";
+      for (let k = 0; k < 2; k++) {
+         while (currentPos < s.length && !/[0-9a-fA-F]/.test(s[currentPos]!)) currentPos++;
+         if (currentPos < s.length) {
+           valStr += s[currentPos];
+           currentPos++;
+         }
+      }
+      if (valStr.length > 0) {
+        chars.push({ start, len: currentPos - start, value: parseInt(valStr.padEnd(2, '0'), 16) });
+      }
+      hexIdx += 2;
+    }
+  } else {
+    for (let i = 1; i < s.length - 1; i++) {
+      let len = 1;
+      let val = s.charCodeAt(i);
+      if (s[i] === '\\') {
+        if (/[0-7]/.test(s[i + 1] || '')) {
+          const octMatch = s.substr(i + 1, 3).match(/[0-7]+/);
+          const oct = octMatch ? octMatch[0] : '';
+          len = 1 + oct.length;
+          val = parseInt(oct, 8);
+        } else {
+          len = 2;
+          const esc = s[i + 1];
+          if (esc === 'n') val = 10;
+          else if (esc === 'r') val = 13;
+          else if (esc === 't') val = 9;
+          else if (esc === 'b') val = 8;
+          else if (esc === 'f') val = 12;
+          else if (esc === '(' || esc === ')' || esc === '\\') val = esc.charCodeAt(0);
+          else val = esc ? esc.charCodeAt(0) : 92;
+        }
+      }
+      chars.push({ start: i, len, value: val });
+      i += (len - 1);
+    }
   }
+  return chars;
+}
 
-  for (let i = 0; i < tmMatches.length; i++) {
-    const tm = tmMatches[i]!;
-    if (tm.y < yMin || tm.y > yMax) continue;
+export const surgicalStrip = (data: Uint8Array, pdfRect: PdfRect): Uint8Array => {
+  const streamString = LATIN1.decode(data);
+  const outputChunks: Uint8Array[] = [];
+  let lastIndex = 0;
 
-    // Search the segment between this Tm and the next Tm (or end of stream)
-    // for ALL Tj/TJ operators.
-    const segEnd = i + 1 < tmMatches.length ? tmMatches[i + 1]!.index : streamString.length;
-    const segment = streamString.substring(tm.endIndex, segEnd);
+  const yMin = pdfRect.rY - 1;
+  const yMax = pdfRect.rY + pdfRect.rH + 1;
+  const xMin = pdfRect.rX - 1;
+  const xMax = pdfRect.rX + pdfRect.rW + 1;
 
-    // Match:
-    //   [array] TJ  — spaced-text array (most common in modern PDFs)
-    //   (string) Tj/TJ
-    //   <hexstring> Tj/TJ
-    const opRegex = /(\[[\s\S]*?\]|[\(\<][\s\S]*?[\)\>])\s*(Tj|TJ)/g;
-    let tj: RegExpExecArray | null;
-    while ((tj = opRegex.exec(segment)) !== null) {
-      const content = tj[1]!;
-      const op = tj[2]!;
-      const absStart = tm.endIndex + tj.index;
+  let stack: Matrix[] = [];
+  let ctm: Matrix = [...IDENTITY];
+  let tm: Matrix = [...IDENTITY];
+  let tlm: Matrix = [...IDENTITY];
+  let fontSize = 10;
+  let leading = 0;
 
-      // Change the operator to "n " (PDF no-op)
-      const opIdx = absStart + tj[0].lastIndexOf(op);
-      result[opIdx] = 110;    // 'n'
-      result[opIdx + 1] = 32; // ' '
+  const NUM = '(?:-?\\d+\\.?\\d*|-?\\.\\d+)';
+  const masterRegex = new RegExp(
+    `(?:((?:${NUM}\\s+){0,6}))(Tm|Td|TD|T\\*|BT|ET|TL|Tf|cm|q|Q)|` +
+    `(\\[[\\s\\S]*?\\]|[\\(\\<][\\s\\S]*?[\\)\\>])\\s*(Tj|TJ)`,
+    'g'
+  );
 
-      if (content.startsWith('[')) {
-        // TJ array: zero out each sub-string (string data between delimiters)
-        const innerRegex = /[\(\<]([\s\S]*?)[\)\>]/g;
-        let inner: RegExpExecArray | null;
-        while ((inner = innerRegex.exec(content)) !== null) {
-          const innerStart = absStart + inner.index + 1; // +1 skips opening delimiter
-          for (let j = 0; j < inner[1]!.length; j++) {
-            result[innerStart + j] = 0;
+  const getNums = (s: string) => (s || '').trim().split(/\s+/).filter(Boolean).map(parseFloat);
+
+  let m: RegExpExecArray | null;
+  while ((m = masterRegex.exec(streamString)) !== null) {
+    if (m.index > lastIndex) {
+      outputChunks.push(encode(streamString.substring(lastIndex, m.index)));
+    }
+
+    if (m[2]) {
+      outputChunks.push(encode(m[0]));
+      const op = m[2];
+      const args = getNums(m[1]!);
+      if (op === 'q') stack.push([...ctm]);
+      else if (op === 'Q') ctm = stack.pop() || [...IDENTITY];
+      else if (op === 'cm' && args.length >= 6) ctm = matMul(ctm, args as any);
+      else if (op === 'BT') { tm = [...IDENTITY]; tlm = [...IDENTITY]; }
+      else if (op === 'Tm' && args.length >= 6) { tm = args as any; tlm = [...tm]; }
+      else if (op === 'Tf' && args.length >= 2) { fontSize = args[1]!; }
+      else if (op === 'Td' || op === 'TD') {
+        if (args.length >= 2) {
+          const [tx, ty] = args;
+          tlm = matMul([1, 0, 0, 1, tx, ty], tlm);
+          tm = [...tlm];
+          if (op === 'TD') leading = -ty;
+        }
+      } else if (op === 'TL' && args.length >= 1) leading = args[0]!;
+      else if (op === 'T*') {
+        tlm = matMul([1, 0, 0, 1, 0, -leading], tlm);
+        tm = [...tlm];
+      }
+    } else if (m[4]) {
+      const content = m[3]!;
+      const op = m[4]!;
+      let localTm = [...tm] as Matrix;
+
+      const segments: Array<{ type: 'text' | 'kern'; text?: string; val?: number; redacted?: boolean }> = [];
+
+      const processStr = (str: string) => {
+        const chars = parsePdfString(str);
+        let buffer = "";
+        let currentRedacted = false;
+        
+        for (const char of chars) {
+           const trm = matMul(localTm, ctm);
+           const curX = trm[4];
+           const curY = trm[5];
+           const inBox = curX >= xMin && curX <= xMax && curY >= yMin && curY <= yMax;
+           
+           if (buffer.length > 0 && inBox !== currentRedacted) {
+             segments.push({ type: 'text', text: buffer, redacted: currentRedacted });
+             buffer = "";
+           }
+           
+           currentRedacted = inBox;
+           if (inBox) {
+             buffer += "0"; 
+           } else {
+             const v = char.value;
+             if (v === 40) buffer += "\\(";
+             else if (v === 41) buffer += "\\)";
+             else if (v === 92) buffer += "\\\\";
+             else if (v >= 32 && v <= 126) buffer += String.fromCharCode(v);
+             else buffer += "\\" + v.toString(8).padStart(3, '0');
+           }
+           
+           const advance = (600 / 1000) * fontSize;
+           localTm = matMul([1, 0, 0, 1, advance, 0], localTm);
+        }
+        if (buffer.length > 0) {
+          segments.push({ type: 'text', text: buffer, redacted: currentRedacted });
+        }
+      };
+
+      if (op === 'TJ') {
+        const tjRegex = /([\(\<][\s\S]*?[\)\>]|(-?\d+\.?\d*))/g;
+        let item: RegExpExecArray | null;
+        while ((item = tjRegex.exec(content)) !== null) {
+          if (item[2]) {
+             const val = parseFloat(item[2]);
+             const kern = -val / 1000 * fontSize;
+             localTm = matMul([1, 0, 0, 1, kern, 0], localTm);
+             segments.push({ type: 'kern', val });
+          } else {
+             processStr(item[1]!);
           }
         }
       } else {
-        // Tj plain string: zero content, leave delimiters intact
-        for (let j = 1; j < content.length - 1; j++) {
-          result[absStart + j] = 0;
+        processStr(content);
+      }
+      
+      tm = localTm;
+
+      let isRedacting = false;
+      let bufferItems: string[] = [];
+
+      const flushBuffer = () => {
+        if (bufferItems.length === 0) return;
+        outputChunks.push(encode(`[${bufferItems.join(' ')}] TJ `));
+        bufferItems = [];
+      };
+
+      for (const seg of segments) {
+        if (seg.type === 'kern') {
+          bufferItems.push(seg.val!.toString());
+        } else {
+          if (seg.redacted !== isRedacting) {
+            flushBuffer();
+            isRedacting = !!seg.redacted;
+            outputChunks.push(encode(`${isRedacting ? 3 : 0} Tr `));
+          }
+          bufferItems.push(`(${seg.text})`);
         }
       }
+      
+      flushBuffer();
+      if (isRedacting) {
+        outputChunks.push(encode("0 Tr "));
+      }
+
+      const totalRedacted = segments.filter(s => s.redacted).length;
+      if (totalRedacted > 0) {
+        redactionDebugLog.push({
+           text: content.length > 50 ? content.slice(0, 50) + "..." : content,
+           op, curX: tm[4], curY: tm[5], rect: { ...pdfRect },
+           accepted: true,
+           reason: `Split: ${totalRedacted} segments invisible`
+        });
+      }
     }
+    lastIndex = m.index + m[0].length;
   }
 
-  return result;
+  if (lastIndex < streamString.length) {
+    outputChunks.push(encode(streamString.substring(lastIndex)));
+  }
+
+  const totalLen = outputChunks.reduce((acc, c) => acc + c.length, 0);
+  const res = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const chunk of outputChunks) {
+    res.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return res;
 };
 
-/**
- * Walks a page's content streams (and recursively any nested Form XObjects)
- * and applies surgicalStrip to remove text data within pdfRect.
- * Mutates stream contents in the pdfDoc context in-place.
- */
 export const redactTextInStreams = (
   pdfDoc: PDFDocument,
   streamRef: PDFRef,
@@ -108,7 +267,7 @@ export const redactTextInStreams = (
   resourcesDict?: PDFDict
 ): void => {
   const stream = pdfDoc.context.lookup(streamRef, PDFStream) as PDFRawStream;
-  if (!stream) return;
+  if (!stream || !(stream instanceof PDFRawStream)) return;
 
   let bytes = stream.contents;
   const filter = stream.dict.get(PDFName.of('Filter'));
@@ -125,7 +284,6 @@ export const redactTextInStreams = (
   const streamResources =
     stream.dict.lookupMaybe(PDFName.of('Resources'), PDFDict) ?? resourcesDict;
 
-  // Recurse into any referenced Form XObjects
   const doRegex = /\/(\w+)\s+Do/g;
   let match: RegExpExecArray | null;
   while ((match = doRegex.exec(streamStr)) !== null) {
@@ -134,17 +292,15 @@ export const redactTextInStreams = (
     const ref = xObjects?.get(PDFName.of(name));
     if (ref instanceof PDFRef) {
       const xStream = pdfDoc.context.lookup(ref, PDFStream) as PDFRawStream;
-      if (xStream?.dict.get(PDFName.of('Subtype')) === PDFName.of('Form')) {
+      if (xStream?.dict?.get(PDFName.of('Subtype')) === PDFName.of('Form')) {
         redactTextInStreams(pdfDoc, ref, pdfRect, streamResources);
       }
     }
   }
 
   const newBytes = surgicalStrip(bytes, pdfRect);
-  if (newBytes.some((b, i) => b !== bytes[i])) {
-    const compressed = pako.deflate(newBytes);
-    (stream as any).contents = compressed;
-    stream.dict.set(PDFName.of('Filter'), PDFName.of('FlateDecode'));
-    stream.dict.set(PDFName.of('Length'), PDFNumber.of(compressed.length));
-  }
+  const compressed = pako.deflate(newBytes);
+  (stream as any).contents = compressed;
+  stream.dict.set(PDFName.of('Filter'), PDFName.of('FlateDecode'));
+  stream.dict.set(PDFName.of('Length'), PDFNumber.of(compressed.length));
 };

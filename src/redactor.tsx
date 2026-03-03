@@ -5,12 +5,48 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import styles from "./assets/redactor.module.css";
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { rasterizePDF } from './pdfRasterize.js';
-import { redactTextInStreams, type PdfRect } from './textRedaction.js';
+import { redactTextInStreams, type PdfRect, redactionDebugLog } from './textRedaction.js';
 import { redactImagesInStream } from './imageRedaction.js';
 import { rgb } from 'pdf-lib';
 import { PdfDeepInspector, PdfInspectorPanel } from './pdfInspector.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdfWorker.js";
+
+const RedactionLog = () => {
+  const [logs, setLogs] = useState(redactionDebugLog.slice());
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (redactionDebugLog.length !== logs.length) {
+        setLogs(redactionDebugLog.slice());
+      }
+    }, 500);
+    return () => clearInterval(interval);
+  }, [logs.length]);
+
+  return (
+    <div style={{ padding: '15px', background: '#000', color: '#0f0', fontFamily: 'monospace', fontSize: '11px', height: '400px', overflow: 'auto', marginTop: '20px', border: '2px solid #555' }}>
+      <h3 style={{ borderBottom: '1px solid #333' }}>Redaction Debug Log ({logs.length} entries)</h3>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ textAlign: 'left', color: '#aaa' }}>
+            <th>Text</th><th>X</th><th>Y</th><th>Status</th><th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {logs.slice().reverse().map((l, i) => (
+            <tr key={i} style={{ borderBottom: '1px solid #222', color: l.accepted ? '#0f0' : '#f44' }}>
+              <td style={{ padding: '4px' }}>{l.text}</td>
+              <td style={{ padding: '4px' }}>{l.curX.toFixed(1)}</td>
+              <td style={{ padding: '4px' }}>{l.curY.toFixed(1)}</td>
+              <td style={{ padding: '4px' }}>{l.accepted ? 'REDACTED' : 'SKIPPED'}</td>
+              <td style={{ padding: '4px' }}>{l.reason}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
 
 const Redactor = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -145,16 +181,21 @@ const Redactor = () => {
     const scaleX = canvas.width / canvas.clientWidth;
     const scaleY = canvas.height / canvas.clientHeight;
 
-    // Normalize: ensure width/height are positive and origin is top-left
-    const xLeft = (raw.width < 0 ? raw.x + raw.width : raw.x) * scaleX;
-    const yTop = (raw.height < 0 ? raw.y + raw.height : raw.y) * scaleY;
-    const rW = Math.abs(raw.width) * scaleX;
-    const rH = Math.abs(raw.height) * scaleY;
+    const x1 = (raw.width < 0 ? raw.x + raw.width : raw.x) * scaleX;
+    const y1 = (raw.height < 0 ? raw.y + raw.height : raw.y) * scaleY;
+    const x2 = x1 + Math.abs(raw.width) * scaleX;
+    const y2 = y1 + Math.abs(raw.height) * scaleY;
 
-    // Flip Y: PDF origin is bottom-left
-    const rY = viewport.height - yTop - rH;
+    // Use PDF.js built-in conversion to handle rotation, CropBox, etc.
+    const [p1x, p1y] = viewport.convertToPdfPoint(x1, y1);
+    const [p2x, p2y] = viewport.convertToPdfPoint(x2, y2);
 
-    return { rX: xLeft, rY, rW, rH };
+    return {
+      rX: Math.min(p1x, p2x),
+      rY: Math.min(p1y, p2y),
+      rW: Math.abs(p2x - p1x),
+      rH: Math.abs(p2y - p1y)
+    };
   };
 
   const stopDrawing = async () => {
@@ -165,19 +206,29 @@ const Redactor = () => {
     const pdfRect = await canvasRectToPdf(currentRect);
     if (!pdfRect || pdfRect.rW < 1 || pdfRect.rH < 1) return;
 
+    // Clear logs for fresh run
+    redactionDebugLog.length = 0;
+
     try {
       const pdfPage = pdfDoc.getPage(currentPageNum - 1);
-      const contentsEntry = pdfPage.node.get(PDFName.of('Contents'));
-      const contentRefs = contentsEntry instanceof PDFArray
-        ? contentsEntry.asArray()
-        : [contentsEntry];
+      const contents = pdfPage.node.lookup(PDFName.of('Contents'));
+      const contentRefs: PDFRef[] = [];
+
+      if (contents instanceof PDFArray) {
+        for (let i = 0; i < contents.size(); i++) {
+          const ref = contents.get(i);
+          if (ref instanceof PDFRef) contentRefs.push(ref);
+        }
+      } else {
+        const ref = pdfPage.node.get(PDFName.of('Contents'));
+        if (ref instanceof PDFRef) contentRefs.push(ref);
+      }
+
       const pageResources = pdfPage.node.lookupMaybe(PDFName.of('Resources'), PDFDict);
 
       for (const ref of contentRefs) {
-        if (ref instanceof PDFRef) {
-          redactTextInStreams(pdfDoc, ref, pdfRect, pageResources);
-          await redactImagesInStream(pdfDoc, ref, pdfRect, pageResources ?? undefined);
-        }
+        redactTextInStreams(pdfDoc, ref, pdfRect, pageResources);
+        await redactImagesInStream(pdfDoc, ref, pdfRect, pageResources ?? undefined);
       }
 
       // Draw an opaque black rectangle over the selection (visual + image redaction layer)
@@ -293,6 +344,7 @@ const Redactor = () => {
       </div>
 
       {pdfjsDoc && <>
+        <RedactionLog />
         <PdfInspectorPanel pdfProxy={pdfjsDoc} pageNumber={currentPageNum} />
         <PdfDeepInspector pdfProxy={pdfjsDoc} pageNumber={currentPageNum} />
       </>}
