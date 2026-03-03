@@ -11,6 +11,7 @@ import { Header } from './components/Header.js';
 import { RedactionBar } from './components/RedactionBar.js';
 import { Toolbar } from './components/Toolbar.js';
 import { InfoDialog } from './components/InfoDialog.js';
+import { AutoRedactBar } from './components/AutoRedactBar.js';
 
 export type PDFJSModule = typeof import('pdfjs-dist');
 export type PDFLibModule = typeof import('pdf-lib');
@@ -403,6 +404,76 @@ const Redactor = () => {
     }
   };
 
+  const onAutoRedact = async (searchText: string) => {
+    if (!pdfjsDoc || !pdfDoc || !loadedPdfjsLib || !loadedPdfLib) return;
+    
+    setIsRendering(true);
+    let foundCount = 0;
+    const newRedactionsMap = new Map(pendingRedactions);
+    const newHistory = [...actionHistory];
+
+    try {
+      const isRegex = searchText.startsWith('/') && searchText.endsWith('/') && searchText.length > 2;
+      const searchRegex = isRegex 
+        ? new RegExp(searchText.slice(1, -1), 'gi') 
+        : new RegExp(searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+
+      for (let i = 1; i <= pdfjsDoc.numPages; i++) {
+        const page = await pdfjsDoc.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageRedactions: PdfRect[] = newRedactionsMap.get(i) || [];
+
+        // Simple approach: find matches within each text item
+        for (const item of textContent.items as any[]) {
+          if (!item.str) continue;
+          
+          let match;
+          while ((match = searchRegex.exec(item.str)) !== null) {
+            const startIdx = match.index;
+            const matchStr = match[0];
+            
+            // Calculate approximate X position based on string length ratio
+            // item.transform: [scaleX, skewY, skewX, scaleY, tx, ty]
+            const tx = item.transform[4];
+            const ty = item.transform[5];
+            const itemWidth = item.width;
+            const itemHeight = item.height || item.transform[3]; // scaleY
+            
+            const charWidth = itemWidth / item.str.length;
+            const matchWidth = charWidth * matchStr.length;
+            const matchX = tx + (charWidth * startIdx);
+
+            pageRedactions.push({
+              rX: matchX,
+              rY: ty,
+              rW: matchWidth,
+              rH: itemHeight
+            });
+            newHistory.push({ pageNum: i });
+            foundCount++;
+          }
+        }
+        
+        if (pageRedactions.length > 0) {
+          newRedactionsMap.set(i, pageRedactions);
+        }
+      }
+
+      if (foundCount > 0) {
+        setPendingRedactions(newRedactionsMap);
+        setActionHistory(newHistory);
+        alert(`Found and queued ${foundCount} redactions.`);
+      } else {
+        alert("No matches found.");
+      }
+    } catch (e) {
+      console.error("Auto-redact error:", e);
+      alert("Error during auto-redact. See console for details.");
+    } finally {
+      setIsRendering(false);
+    }
+  };
+
   const handleDownload = async () => {
     if (!pdfBytes || !pdfjsDoc) return;
 
@@ -462,6 +533,14 @@ const Redactor = () => {
           isRendering={isRendering}
           actionHistoryCount={actionHistory.length}
         />
+
+        {pdfjsDoc && !showInfo && (
+          <AutoRedactBar 
+            pdfjsDoc={pdfjsDoc}
+            onAutoRedact={onAutoRedact}
+            isRendering={isRendering}
+          />
+        )}
 
         <div className={styles.viewerWrapper}>
           <div className={styles.canvasContainer}>
