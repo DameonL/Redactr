@@ -1,3 +1,63 @@
+/* ====================
+   THEME VARIABLES
+==================== */
+.themeWrapper {
+    /* Light Theme (Default) */
+    --app-bg: #f5f5f5;
+    --text-color: #333333;
+    --panel-bg: #ffffff;
+    --border-color: #e0e0e0;
+    --btn-hover: #f0f0f0;
+    
+    --canvas-bg: #ffffff;
+    --canvas-shadow: 0px 10px 30px rgba(0,0,0,0.15);
+    
+    --toolbar-bg: rgba(255, 255, 255, 0.85);
+    --toolbar-border: rgba(0,0,0,0.05);
+    --toolbar-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    
+    --log-bg: #f8f9fa;
+    --log-text: #006400;
+    --log-border: #dddddd;
+    --log-subtext: #666666;
+    --log-err: #ee3333;
+    
+    --input-bg: #f5f5f5;
+    --upload-bg: #e5e7eb;
+
+    background-color: var(--app-bg);
+    color: var(--text-color);
+    min-height: 100vh;
+    transition: background-color 0.3s, color 0.3s;
+}
+
+.themeWrapper.dark {
+    /* Dark Theme Overrides */
+    --app-bg: #121212;
+    --text-color: #ffffff;
+    --panel-bg: #1e1e1e;
+    --border-color: #333333;
+    --btn-hover: #333333;
+    
+    --canvas-bg: #18181b;
+    --canvas-shadow: 0px 10px 30px rgba(0,0,0,0.8);
+    
+    --toolbar-bg: rgba(30, 30, 30, 0.85);
+    --toolbar-border: rgba(255,255,255,0.1);
+    --toolbar-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    
+    --log-bg: #111111;
+    --log-text: #00ff00;
+    --log-border: #333333;
+    --log-subtext: #aaaaaa;
+    
+    --input-bg: #333333;
+    --upload-bg: #333333;
+}
+
+/* ====================
+   LAYOUT & COMPONENTS
+==================== */
 .container {
     display: flex;
     flex-direction: column;
@@ -5,22 +65,31 @@
     gap: 20px;
     padding: 20px;
     font-family: sans-serif;
-    background-color: #f5f5f5;
-    min-height: 100vh;
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    max-width: 1400px;
+}
+
+.headerTitle {
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: bold;
 }
 
 .controls {
     display: flex;
     gap: 15px;
     align-items: center;
-    background: white;
+    background: var(--panel-bg);
+    border: 1px solid var(--border-color);
     padding: 15px 25px;
     border-radius: 8px;
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-}
-
-.fileInput {
-    font-size: 14px;
 }
 
 .hiddenInput {
@@ -28,48 +97,189 @@
 }
 
 .buttonBase {
-    background-color: #007bff;
     font-size: 14px;
-    transition: all 0.2s ease;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     padding: 10px 20px;
-    color: white;
     border: none;
     border-radius: 4px;
     cursor: pointer;
     font-weight: bold;
-    transition: background-color 0.2s;
+    transition: background-color 0.2s, opacity 0.2s;
 }
 
-
+.uploadButton {
+    background-color: var(--upload-bg);
+    color: var(--text-color);
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-weight: 500;
+}
 .uploadButton:hover {
-    background-color: #5a6268;
+    background-color: var(--btn-hover);
 }
 
+.downloadButton {
+    background-color: #3b82f6;
+    color: white;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-weight: 500;
+    gap: 6px;
+}
 .downloadButton:hover:not(:disabled) {
-    background-color: #0056b3;
+    background-color: #2563eb;
 }
-
 .downloadButton:disabled {
-    background-color: #ccc;
+    opacity: 0.6;
     cursor: not-allowed;
 }
 
-.canvasContainer {
-    position: relative;
-    border: 2px solid #333;
+.checkboxLabel {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--log-subtext);
+}
+
+.selectInput {
+    background: var(--input-bg);
+    color: var(--text-color);
+    border: 1px solid var(--border-color);
     border-radius: 4px;
-    background-color: white;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-    margin-top: 10px;
+    padding: 4px 8px;
+}
+
+/* ====================
+   DOCUMENT VIEWER
+==================== */
+.viewerWrapper {
+    position: relative;
+    width: 100%;
+    max-width: 1400px;
+    display: flex;
+    justify-content: center;
+    height: 75vh;
+}
+
+.canvasContainer {
+    width: 100%;
+    height: 100%;
     overflow: auto;
-    max-width: 90vw;
-    max-height: 80vh;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    background-color: var(--canvas-bg);
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 40px 0;
 }
 
 .canvasElement {
     cursor: crosshair;
     display: block;
+    box-shadow: var(--canvas-shadow);
+}
+
+.emptyState {
+    margin: auto;
+    color: var(--log-subtext);
+}
+
+/* ====================
+   TOOLBAR
+==================== */
+.toolbar {
+    position: absolute;
+    bottom: 25px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--toolbar-bg);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    padding: 6px;
+    border-radius: 30px;
+    box-shadow: var(--toolbar-shadow);
+    border: 1px solid var(--toolbar-border);
+}
+
+.iconButton {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: transparent;
+    border: none;
+    color: var(--text-color);
+    cursor: pointer;
+    transition: background 0.2s;
+}
+.iconButton:hover {
+    background: var(--btn-hover);
+}
+
+.zoomText {
+    min-width: 55px;
+    text-align: center;
+    font-size: 13px;
+    font-weight: bold;
+    font-family: monospace;
+}
+
+.toolbarDivider {
+    width: 1px;
+    height: 24px;
+    background: var(--border-color);
+    margin: 0 8px;
+}
+
+/* ====================
+   DEBUG LOG
+==================== */
+.logContainer {
+    padding: 15px;
+    background: var(--log-bg);
+    color: var(--log-text);
+    font-family: monospace;
+    font-size: 11px;
+    height: 400px;
+    overflow: auto;
+    margin-top: 20px;
+    border: 2px solid var(--log-border);
+    border-radius: 8px;
+}
+
+.logHeader {
+    border-bottom: 1px solid var(--log-border);
+    padding-bottom: 8px;
+    margin-top: 0;
+}
+
+.logTable {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.logTableHeader {
+    text-align: left;
+    color: var(--log-subtext);
+}
+
+.logTableRow {
+    border-bottom: 1px solid var(--log-border);
+}
+
+.logTableCell {
+    padding: 6px 4px;
+}
+
+.logDetails {
+    color: var(--log-subtext);
 }

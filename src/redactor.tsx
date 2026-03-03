@@ -1,4 +1,4 @@
-import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef } from 'pdf-lib';
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef, rgb } from 'pdf-lib';
 import * as pdfjsLib from "pdfjs-dist";
 import { h, Fragment, type TargetedEvent, type TargetedMouseEvent } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
@@ -6,10 +6,17 @@ import styles from "./assets/redactor.module.css";
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { rasterizePDF } from './pdfRasterize.js';
 import { redactContentStream, type PdfRect, redactionDebugLog } from './textRedaction.js';
-import { rgb } from 'pdf-lib';
 import { PdfDeepInspector, PdfInspectorPanel } from './pdfInspector.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdfWorker.js";
+
+const Icons = {
+  ZoomIn: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14zm.5-7H9v2H7v1h2v2h1v-2h2V9h-2z"/></svg>,
+  ZoomOut: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14zM7 9h5v2H7z"/></svg>,
+  Sun: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.79 1.42-1.41zM4 10.5H1v2h3v-2zm9-9.95h-2V3.5h2V.55zm7.45 3.91l-1.41-1.41-1.79 1.79 1.41 1.41 1.79-1.79zm-3.21 13.7l1.79 1.8 1.41-1.41-1.8-1.79-1.4 1.4zM20 10.5v2h3v-2h-3zm-8 8h-2v3h2v-3zm-7.45-3.91l1.41 1.41 1.79-1.79-1.41-1.41-1.79 1.79zM12 6.5c-3.03 0-5.5 2.47-5.5 5.5s2.47 5.5 5.5 5.5 5.5-2.47 5.5-5.5-2.47-5.5-5.5-5.5z"/></svg>,
+  Moon: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M10 2c-1.82 0-3.53.5-5 1.35C7.99 5.08 10 8.3 10 12s-2.01 6.92-5 8.65C6.47 21.5 8.18 22 10 22c5.52 0 10-4.48 10-10S15.52 2 10 2z"/></svg>,
+  Download: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+};
 
 const RedactionLog = () => {
   const [logs, setLogs] = useState(redactionDebugLog.slice());
@@ -23,23 +30,23 @@ const RedactionLog = () => {
   }, [logs.length]);
 
   return (
-    <div style={{ padding: '15px', background: '#000', color: '#0f0', fontFamily: 'monospace', fontSize: '11px', height: '400px', overflow: 'auto', marginTop: '20px', border: '2px solid #555' }}>
-      <h3 style={{ borderBottom: '1px solid #333' }}>Redaction Debug Log ({logs.length} entries)</h3>
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+    <div className={styles.logContainer}>
+      <h3 className={styles.logHeader}>Redaction Debug Log ({logs.length} entries)</h3>
+      <table className={styles.logTable}>
         <thead>
-          <tr style={{ textAlign: 'left', color: '#aaa' }}>
+          <tr className={styles.logTableHeader}>
             <th>Text</th><th>X</th><th>Y</th><th>Status</th><th>Reason</th><th>Details</th>
           </tr>
         </thead>
         <tbody>
           {logs.slice().reverse().map((l, i) => (
-            <tr key={i} style={{ borderBottom: '1px solid #222', color: l.accepted ? '#0f0' : '#f44' }}>
-              <td style={{ padding: '4px' }}>{l.text}</td>
-              <td style={{ padding: '4px' }}>{l.curX.toFixed(1)}</td>
-              <td style={{ padding: '4px' }}>{l.curY.toFixed(1)}</td>
-              <td style={{ padding: '4px' }}>{l.accepted ? 'REDACTED' : 'SKIPPED'}</td>
-              <td style={{ padding: '4px' }}>{l.reason}</td>
-              <td style={{ padding: '4px', color: '#888' }}>{l.details || ''}</td>
+            <tr key={i} className={styles.logTableRow} style={{ color: l.accepted ? 'var(--log-text)' : 'var(--log-err)' }}>
+              <td className={styles.logTableCell}>{l.text}</td>
+              <td className={styles.logTableCell}>{l.curX.toFixed(1)}</td>
+              <td className={styles.logTableCell}>{l.curY.toFixed(1)}</td>
+              <td className={styles.logTableCell} style={{ fontWeight: 'bold' }}>{l.accepted ? 'REDACTED' : 'SKIPPED'}</td>
+              <td className={styles.logTableCell}>{l.reason}</td>
+              <td className={`${styles.logTableCell} ${styles.logDetails}`}>{l.details || ''}</td>
             </tr>
           ))}
         </tbody>
@@ -53,6 +60,7 @@ const Redactor = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderTaskRef = useRef<boolean>(false);
 
+  const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [filename, setFilename] = useState<string>("Redacted Document.pdf");
   const [pdfDoc, setPdfDoc] = useState<PDFDocument | null>(null);
   const [pdfjsDoc, setPdfjsDoc] = useState<PDFDocumentProxy | null>(null);
@@ -62,12 +70,21 @@ const Redactor = () => {
   const [isRendering, setIsRendering] = useState(false);
   const [startPoint, setStartPoint] = useState({ x: 0, y: 0 });
   const [currentRect, setCurrentRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
-  const [renderScale] = useState(1);
+  const [renderScale, setRenderScale] = useState(1.5);
   const [downloadScale, setDownloadScale] = useState(1.5);
   const [rasterizeOutput, setRasterizeOutput] = useState(false);
 
-  // overlayRect is passed directly to renderPage so the drawn rectangle
-  // is always in sync with the current mouse position (state updates are async).
+  useEffect(() => {
+    const saved = localStorage.getItem('redactor-theme');
+    if (saved === 'light' || saved === 'dark') setTheme(saved);
+  }, []);
+
+  const toggleTheme = () => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    localStorage.setItem('redactor-theme', next);
+  };
+
   const renderPage = async (
     pageNum: number,
     pdfjsDocument: PDFDocumentProxy,
@@ -98,8 +115,10 @@ const Redactor = () => {
       await page.render({ canvas, canvasContext: ctx, viewport }).promise;
 
       if (overlayRect) {
-        ctx.strokeStyle = 'red';
+        ctx.strokeStyle = '#ef4444'; 
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.15)';
         ctx.lineWidth = 2;
+        ctx.fillRect(overlayRect.x, overlayRect.y, overlayRect.width, overlayRect.height);
         ctx.strokeRect(overlayRect.x, overlayRect.y, overlayRect.width, overlayRect.height);
       }
     } catch (error) {
@@ -157,18 +176,9 @@ const Redactor = () => {
     const y = e.clientY - rect.top;
     const newRect = { x: startPoint.x, y: startPoint.y, width: x - startPoint.x, height: y - startPoint.y };
     setCurrentRect(newRect);
-    // Pass newRect directly — don't rely on the async state update
     renderPage(currentPageNum, pdfjsDoc, pdfDoc, newRect);
   };
 
-  /**
-   * Converts a canvas-space selection rectangle into PDF user-space coordinates.
-   *
-   * Canvas coordinates: origin top-left, units = CSS pixels.
-   * PDF coordinates:    origin bottom-left, units = points (at renderScale 1, 1pt = 1px).
-   *
-   * scaleX/scaleY handle any CSS zoom applied to the canvas element.
-   */
   const canvasRectToPdf = async (
     raw: { x: number; y: number; width: number; height: number }
   ): Promise<PdfRect | null> => {
@@ -186,7 +196,6 @@ const Redactor = () => {
     const x2 = x1 + Math.abs(raw.width) * scaleX;
     const y2 = y1 + Math.abs(raw.height) * scaleY;
 
-    // Use PDF.js built-in conversion to handle rotation, CropBox, etc.
     const [p1x, p1y] = viewport.convertToPdfPoint(x1, y1);
     const [p2x, p2y] = viewport.convertToPdfPoint(x2, y2);
 
@@ -204,9 +213,11 @@ const Redactor = () => {
     setCurrentRect(null);
 
     const pdfRect = await canvasRectToPdf(currentRect);
-    if (!pdfRect || pdfRect.rW < 1 || pdfRect.rH < 1) return;
+    if (!pdfRect || pdfRect.rW < 1 || pdfRect.rH < 1) {
+        renderPage(currentPageNum, pdfjsDoc, pdfDoc);
+        return;
+    }
 
-    // Clear logs for fresh run
     redactionDebugLog.length = 0;
 
     try {
@@ -230,7 +241,6 @@ const Redactor = () => {
         await redactContentStream(pdfDoc, ref, pdfRect, pageResources);
       }
 
-      // Draw an opaque black rectangle over the selection (visual + image redaction layer)
       pdfPage.drawRectangle({
         x: pdfRect.rX,
         y: pdfRect.rY,
@@ -239,11 +249,17 @@ const Redactor = () => {
         color: rgb(0, 0, 0),
       });
 
+      pdfDoc.setTitle('');
+      pdfDoc.setAuthor('');
+      pdfDoc.setSubject('');
+      pdfDoc.setKeywords([]);
+      pdfDoc.setProducer('Secure Redactor'); 
+      pdfDoc.setCreator('Secure Redactor');
+      pdfDoc.catalog.delete(PDFName.of('Metadata')); 
+
       const newBytes = await pdfDoc.save({ useObjectStreams: false });
       setPdfBytes(newBytes);
       
-      // Reload both the pdfjs and pdf-lib documents from the newly saved bytes
-      // to ensure the state is consistent for the next redaction.
       const loadedPdfjsDoc = await pdfjsLib.getDocument({ data: newBytes.slice(0) }).promise;
       const loadedPdfDoc = await PDFDocument.load(newBytes.slice(0));
       setPdfjsDoc(loadedPdfjsDoc);
@@ -251,13 +267,6 @@ const Redactor = () => {
     } catch (e) {
       console.error(e);
     }
-  };
-
-  const addRedactedToFilename = (name: string) => {
-    const dot = name.lastIndexOf(".");
-    const base = name.substring(0, dot);
-    const ext = name.substring(dot + 1);
-    return `${base} - Redacted.${ext}`;
   };
 
   const handleDownload = async () => {
@@ -274,7 +283,7 @@ const Redactor = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = addRedactedToFilename(filename);
+    a.download = `${filename.replace('.pdf', '')} - Redacted.pdf`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -285,73 +294,109 @@ const Redactor = () => {
     if (pdfjsDoc && pdfDoc && !renderTaskRef.current) {
       renderPage(currentPageNum, pdfjsDoc, pdfDoc);
     }
-  }, [currentPageNum, pdfjsDoc, pdfDoc]);
+  }, [currentPageNum, pdfjsDoc, pdfDoc, renderScale]); 
 
   return (
-    <div className={styles.container}>
-      <h1>PDF Redactor</h1>
+    <div className={`${styles.themeWrapper} ${theme === 'dark' ? styles.dark : ''}`}>
+      <div className={styles.container}>
+        
+        <div className={styles.header}>
+          <h1 className={styles.headerTitle}>PDF Redactor</h1>
+          
+          <div className={styles.controls}>
+            <label className={styles.checkboxLabel}>
+              <input type="checkbox" checked={rasterizeOutput} onChange={e => setRasterizeOutput((e.currentTarget as HTMLInputElement).checked)} />
+              Rasterize Output
+            </label>
 
-      <div className={styles.controls}>
-        <input
-          id="file-upload"
-          type="file"
-          accept="application/pdf"
-          onChange={handleFileChange}
-          ref={fileInputRef}
-          className={styles.hiddenInput}
-        />
-        <label htmlFor="file-upload" className={`${styles.buttonBase} ${styles.uploadButton}`}>
-          Choose File
-        </label>
-        <button
-          onClick={handleDownload}
-          disabled={!pdfBytes || isRendering}
-          className={`${styles.buttonBase} ${styles.downloadButton}`}
-        >
-          {isRendering ? 'Processing...' : 'Download Redacted PDF'}
-        </button>
+            {rasterizeOutput && (
+              <select 
+                value={downloadScale}
+                onChange={e => setDownloadScale(Number(e.currentTarget.value))}
+                className={styles.selectInput}
+              >
+                <option value="1">1x Quality</option>
+                <option value="1.5">1.5x Quality</option>
+                <option value="2">2x Quality</option>
+                <option value="3">3x Quality</option>
+              </select>
+            )}
+
+            <input 
+              id="file-upload" 
+              type="file" 
+              accept="application/pdf" 
+              onChange={handleFileChange} 
+              ref={fileInputRef} 
+              className={styles.hiddenInput} 
+            />
+            <label htmlFor="file-upload" className={`${styles.buttonBase} ${styles.uploadButton}`}>
+              Upload File
+            </label>
+
+            <button 
+              onClick={handleDownload} 
+              disabled={!pdfBytes || isRendering}
+              className={`${styles.buttonBase} ${styles.downloadButton}`}
+            >
+              <Icons.Download />
+              {isRendering ? 'Processing...' : 'Export'}
+            </button>
+          </div>
+        </div>
+
+        <div className={styles.viewerWrapper}>
+          
+          <div className={styles.canvasContainer}>
+            {pdfjsDoc ? (
+              <canvas
+                ref={canvasRef}
+                onMouseDown={startDrawing}
+                onMouseMove={draw}
+                onMouseUp={stopDrawing}
+                onMouseLeave={stopDrawing}
+                className={styles.canvasElement}
+              />
+            ) : (
+               <div className={styles.emptyState}>
+                 No document loaded. Upload a PDF to begin.
+               </div>
+            )}
+          </div>
+
+          <div className={styles.toolbar}>
+            <button 
+              onClick={() => setRenderScale(s => Math.max(0.5, s - 0.25))} disabled={!pdfjsDoc}
+              className={styles.iconButton}
+              title="Zoom Out"
+            >
+              <Icons.ZoomOut />
+            </button>
+            
+            <span className={styles.zoomText}>
+              {Math.round(renderScale * 100)}%
+            </span>
+            
+            <button 
+              onClick={() => setRenderScale(s => Math.min(5, s + 0.25))} disabled={!pdfjsDoc}
+              className={styles.iconButton}
+              title="Zoom In"
+            >
+              <Icons.ZoomIn />
+            </button>
+
+            <div className={styles.toolbarDivider} />
+
+            <button 
+              onClick={toggleTheme}
+              className={styles.iconButton}
+              title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
+            >
+              {theme === 'dark' ? <Icons.Sun /> : <Icons.Moon />}
+            </button>
+          </div>
+        </div>
       </div>
-
-      <div style={{ display: "flex", gap: "20px", alignItems: "center" }}>
-        <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <input
-            type="checkbox"
-            checked={rasterizeOutput}
-            onChange={e => setRasterizeOutput((e.currentTarget as HTMLInputElement).checked)}
-          />
-          Rasterize output (fully removes hidden image/text data; slower)
-        </label>
-
-        {rasterizeOutput && (
-          <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            Zoom:
-            <select onChange={e => setDownloadScale(Number(e.currentTarget.value))}>
-              <option value="1">1×</option>
-              <option value="1.5" selected>1.5×</option>
-              <option value="2">2×</option>
-              <option value="3">3×</option>
-              <option value="4">4×</option>
-            </select>
-          </label>
-        )}
-      </div>
-
-      <div className={styles.canvasContainer}>
-        <canvas
-          ref={canvasRef}
-          onMouseDown={startDrawing}
-          onMouseMove={draw}
-          onMouseUp={stopDrawing}
-          onMouseLeave={stopDrawing}
-          style={{ cursor: 'crosshair', display: 'block' }}
-        />
-      </div>
-
-      {pdfjsDoc && <>
-        <RedactionLog />
-        <PdfInspectorPanel pdfProxy={pdfjsDoc} pageNumber={currentPageNum} />
-        <PdfDeepInspector pdfProxy={pdfjsDoc} pageNumber={currentPageNum} />
-      </>}
     </div>
   );
 };
