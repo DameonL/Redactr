@@ -248,6 +248,60 @@
     font-size: 0.95rem;
 }
 
+.shortcutsOverlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    backdrop-filter: blur(4px);
+}
+
+.shortcutsCard {
+    background: var(--panel-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 30px;
+    width: 100%;
+    max-width: 400px;
+    box-shadow: var(--canvas-shadow);
+}
+
+.shortcutsList {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    margin-top: 20px;
+}
+
+.shortcutItem {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: var(--text-color);
+    font-size: 14px;
+}
+
+.shortcutKeys {
+    display: flex;
+    gap: 4px;
+}
+
+.shortcutKeys kbd {
+    background: var(--upload-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-family: monospace;
+    font-size: 12px;
+    box-shadow: 0 2px 0 var(--border-color);
+}
+
 .infoActions {
     display: flex;
     justify-content: flex-end;

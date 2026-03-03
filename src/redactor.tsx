@@ -12,6 +12,7 @@ import { RedactionBar } from './components/RedactionBar.js';
 import { Toolbar } from './components/Toolbar.js';
 import { InfoDialog } from './components/InfoDialog.js';
 import { AutoRedactBar } from './components/AutoRedactBar.js';
+import { ShortcutsDialog } from './components/ShortcutsDialog.js';
 
 export type PDFJSModule = typeof import('pdfjs-dist');
 export type PDFLibModule = typeof import('pdf-lib');
@@ -24,6 +25,7 @@ const Redactor = () => {
 
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [showInfo, setShowInfo] = useState<boolean>(false);
+  const [showShortcuts, setShowShortcuts] = useState<boolean>(false);
 
   const [filename, setFilename] = useState<string>("Redacted Document.pdf");
   const [pdfDoc, setPdfDoc] = useState<PDFDocument | null>(null);
@@ -45,12 +47,60 @@ const Redactor = () => {
   const [isPanning, setIsPanning] = useState(false);
   const [lastPanPos, setLastPanPos] = useState({ x: 0, y: 0 });
   const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null);
+  const prevInteractionModeRef = useRef<'redact' | 'pan' | null>(null);
 
   useEffect(() => {
     document.title = "Redactr";
     const saved = localStorage.getItem('redactor-theme');
     if (saved === 'light' || saved === 'dark') setTheme(saved);
   }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore shortcuts if user is typing in an input
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      // 1. Undo: Ctrl+Z or Cmd+Z
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        e.preventDefault();
+        undoLastRedaction();
+      }
+
+      // 2. Navigation: Arrow keys
+      if (e.key === 'ArrowLeft') {
+        setCurrentPageNum(p => Math.max(1, p - 1));
+      }
+      if (e.key === 'ArrowRight') {
+        if (pdfjsDoc) setCurrentPageNum(p => Math.min(pdfjsDoc.numPages, p + 1));
+      }
+
+      // 3. Temporary Pan: Spacebar
+      if (e.code === 'Space' && !e.repeat) {
+        if (interactionMode !== 'pan') {
+          prevInteractionModeRef.current = interactionMode;
+          setInteractionMode('pan');
+        }
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        if (prevInteractionModeRef.current !== null) {
+          setInteractionMode(prevInteractionModeRef.current);
+          prevInteractionModeRef.current = null;
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [actionHistory, currentPageNum, pdfjsDoc, interactionMode]);
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark';
@@ -514,6 +564,8 @@ const Redactor = () => {
         <Header 
           showInfo={showInfo}
           setShowInfo={setShowInfo}
+          showShortcuts={showShortcuts}
+          setShowShortcuts={setShowShortcuts}
           rasterizeOutput={rasterizeOutput}
           setRasterizeOutput={setRasterizeOutput}
           downloadScale={downloadScale}
@@ -524,6 +576,10 @@ const Redactor = () => {
           pdfBytes={pdfBytes}
           isRendering={isRendering}
         />
+
+        {showShortcuts && (
+          <ShortcutsDialog onClose={() => setShowShortcuts(false)} />
+        )}
 
         <RedactionBar 
           pendingRedactionsCount={pendingRedactions.size}

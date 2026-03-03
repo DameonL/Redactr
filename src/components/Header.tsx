@@ -5,6 +5,8 @@ import styles from "../assets/redactor.module.css";
 interface HeaderProps {
   showInfo: boolean;
   setShowInfo: (show: boolean) => void;
+  showShortcuts: boolean;
+  setShowShortcuts: (show: boolean) => void;
   rasterizeOutput: boolean;
   setRasterizeOutput: (rasterize: boolean) => void;
   downloadScale: number;
@@ -19,6 +21,8 @@ interface HeaderProps {
 export const Header = ({
   showInfo,
   setShowInfo,
+  showShortcuts,
+  setShowShortcuts,
   rasterizeOutput,
   setRasterizeOutput,
   downloadScale,
@@ -41,6 +45,15 @@ export const Header = ({
           title="How it works"
         >
           <Icons.Info />
+        </button>
+
+        <button
+          onClick={() => setShowShortcuts(!showShortcuts)}
+          className={styles.buttonBase}
+          style={{ background: 'transparent', color: 'var(--text-color)', padding: '8px', border: '1px solid var(--border-color)' }}
+          title="Keyboard Shortcuts"
+        >
+          <Icons.Keyboard />
         </button>
 
         <label className={styles.checkboxLabel}>
