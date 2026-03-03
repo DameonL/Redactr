@@ -1,5 +1,5 @@
-import { PDFDocument } from 'pdf-lib';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
+import type { PDFJSModule, PDFLibModule } from './redactor'; // Import types from redactor.tsx
 
 /**
  * Renders every page of pdfjsDoc to a JPEG canvas at the given scale and
@@ -11,9 +11,10 @@ import type { PDFDocumentProxy } from 'pdfjs-dist';
  */
 export const rasterizePDF = async (
   pdfjsDoc: PDFDocumentProxy,
-  scale: number
+  scale: number,
+  PDFLib: PDFLibModule // Dynamically loaded pdf-lib module
 ): Promise<Uint8Array> => {
-  const outputDoc = await PDFDocument.create();
+  const outputDoc = await PDFLib.PDFDocument.create();
 
   for (let i = 1; i <= pdfjsDoc.numPages; i++) {
     const page = await pdfjsDoc.getPage(i);

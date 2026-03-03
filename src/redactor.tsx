@@ -1,13 +1,12 @@
-import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRef, rgb } from 'pdf-lib';
-import * as pdfjsLib from "pdfjs-dist";
-import { h, Fragment, type TargetedEvent, type TargetedMouseEvent } from 'preact';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
+import { h, type TargetedEvent, type TargetedMouseEvent } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import styles from "./assets/redactor.module.css";
-import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { rasterizePDF } from './pdfRasterize.js';
-import { redactContentStream, type PdfRect, redactionDebugLog } from './textRedaction.js';
+import { redactContentStream, redactionDebugLog, type PdfRect } from './textRedaction.js';
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdfWorker.js";
+export type PDFJSModule = typeof import('pdfjs-dist');
+export type PDFLibModule = typeof import('pdf-lib');
 
 const Icons = {
   ZoomIn: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14zm.5-7H9v2H7v1h2v2h1v-2h2V9h-2z" /></svg>,
@@ -43,6 +42,8 @@ const Redactor = () => {
   const [renderScale, setRenderScale] = useState(1.5);
   const [downloadScale, setDownloadScale] = useState(1.5);
   const [rasterizeOutput, setRasterizeOutput] = useState(false);
+  const [loadedPdfjsLib, setLoadedPdfjsLib] = useState<PDFJSModule | null>(null);
+  const [loadedPdfLib, setLoadedPdfLib] = useState<PDFLibModule | null>(null);
 
   useEffect(() => {
     document.title = "Redactr";
@@ -58,8 +59,10 @@ const Redactor = () => {
 
   const renderPage = async (
     pageNum: number,
+    pdfjsLib: PDFJSModule,
+    PDFDocument: PDFLibModule['PDFDocument'],
     pdfjsDocument: PDFDocumentProxy,
-    pdfLibDoc: PDFDocument,
+    pdfLibDoc: InstanceType<typeof PDFLibModule['PDFDocument']>,
     overlayRect?: { x: number; y: number; width: number; height: number } | null
   ) => {
     if (renderTaskRef.current || !pdfjsDocument || !canvasRef.current || !pdfLibDoc) return;
@@ -102,13 +105,20 @@ const Redactor = () => {
 
   const initPdf = async (fileBytes: Uint8Array) => {
     try {
-      const loadedPdfDoc = await PDFDocument.load(new Uint8Array(fileBytes));
-      const loadedPdfjsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(fileBytes) }).promise;
+      const PDFJS = await import('pdfjs-dist');
+      const PDFLib = await import('pdf-lib');
+
+      PDFJS.GlobalWorkerOptions.workerSrc = "/pdfWorker.js";
+
+      const loadedPdfDoc = await PDFLib.PDFDocument.load(new Uint8Array(fileBytes));
+      const loadedPdfjsDoc = await PDFJS.getDocument({ data: new Uint8Array(fileBytes) }).promise;
       setPdfDoc(loadedPdfDoc);
       setPdfjsDoc(loadedPdfjsDoc);
       setPdfBytes(new Uint8Array(fileBytes));
       setCurrentPageNum(1);
       setShowInfo(false);
+      setLoadedPdfjsLib(PDFJS);
+      setLoadedPdfLib(PDFLib);
     } catch (error) {
       console.error("Error initializing PDF:", error);
     }
@@ -140,7 +150,7 @@ const Redactor = () => {
   };
 
   const draw = (e: TargetedMouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing || !pdfjsDoc || !pdfDoc || showInfo) return;
+    if (!isDrawing || !pdfjsDoc || !pdfDoc || showInfo || !loadedPdfjsLib || !loadedPdfLib) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -148,7 +158,7 @@ const Redactor = () => {
     const y = e.clientY - rect.top;
     const newRect = { x: startPoint.x, y: startPoint.y, width: x - startPoint.x, height: y - startPoint.y };
     setCurrentRect(newRect);
-    renderPage(currentPageNum, pdfjsDoc, pdfDoc, newRect);
+    renderPage(currentPageNum, loadedPdfjsLib, loadedPdfLib.PDFDocument, pdfjsDoc, pdfDoc, newRect);
   };
 
   const canvasRectToPdf = async (
@@ -180,19 +190,20 @@ const Redactor = () => {
   };
 
   const stopDrawing = async () => {
-    if (!isDrawing || !pdfDoc || !pdfjsDoc || !currentRect || showInfo) return;
+    if (!isDrawing || !pdfDoc || !pdfjsDoc || !currentRect || showInfo || !loadedPdfjsLib || !loadedPdfLib) return;
     setIsDrawing(false);
     setCurrentRect(null);
 
     const pdfRect = await canvasRectToPdf(currentRect);
     if (!pdfRect || pdfRect.rW < 1 || pdfRect.rH < 1) {
-      renderPage(currentPageNum, pdfjsDoc, pdfDoc);
+      renderPage(currentPageNum, loadedPdfjsLib, loadedPdfLib.PDFDocument, pdfjsDoc, pdfDoc);
       return;
     }
 
     redactionDebugLog.length = 0;
 
     try {
+      const { PDFArray, PDFName, PDFDict, PDFRef, rgb } = loadedPdfLib;
       const pdfPage = pdfDoc.getPage(currentPageNum - 1);
       const contents = pdfPage.node.lookup(PDFName.of('Contents'));
       const contentRefs: PDFRef[] = [];
@@ -210,7 +221,7 @@ const Redactor = () => {
       const pageResources = pdfPage.node.lookupMaybe(PDFName.of('Resources'), PDFDict);
 
       for (const ref of contentRefs) {
-        await redactContentStream(pdfDoc, ref, pdfRect, pageResources);
+        await redactContentStream(loadedPdfLib, pdfDoc, ref, pdfRect, pageResources);
       }
 
       pdfPage.drawRectangle({
@@ -232,8 +243,8 @@ const Redactor = () => {
       const newBytes = await pdfDoc.save({ useObjectStreams: false });
       setPdfBytes(newBytes);
 
-      const loadedPdfjsDoc = await pdfjsLib.getDocument({ data: newBytes.slice(0) }).promise;
-      const loadedPdfDoc = await PDFDocument.load(newBytes.slice(0));
+      const loadedPdfjsDoc = await loadedPdfjsLib.getDocument({ data: newBytes.slice(0) }).promise;
+      const loadedPdfDoc = await loadedPdfLib.PDFDocument.load(newBytes.slice(0));
       setPdfjsDoc(loadedPdfjsDoc);
       setPdfDoc(loadedPdfDoc);
     } catch (e) {
@@ -245,8 +256,8 @@ const Redactor = () => {
     if (!pdfBytes || !pdfjsDoc) return;
 
     let outputBytes: Uint8Array;
-    if (rasterizeOutput) {
-      outputBytes = await rasterizePDF(pdfjsDoc, downloadScale);
+    if (rasterizeOutput && loadedPdfjsLib && loadedPdfLib) {
+      outputBytes = await rasterizePDF(pdfjsDoc, downloadScale, loadedPdfLib);
     } else {
       outputBytes = pdfBytes;
     }
@@ -263,10 +274,10 @@ const Redactor = () => {
   };
 
   useEffect(() => {
-    if (pdfjsDoc && pdfDoc && !renderTaskRef.current && !showInfo) {
-      renderPage(currentPageNum, pdfjsDoc, pdfDoc);
+    if (pdfjsDoc && pdfDoc && !renderTaskRef.current && !showInfo && loadedPdfjsLib && loadedPdfLib) {
+      renderPage(currentPageNum, loadedPdfjsLib, loadedPdfLib.PDFDocument, pdfjsDoc, pdfDoc);
     }
-  }, [currentPageNum, pdfjsDoc, pdfDoc, renderScale, showInfo]);
+  }, [currentPageNum, pdfjsDoc, pdfDoc, renderScale, showInfo, loadedPdfjsLib, loadedPdfLib]);
 
   return (
     <div className={`${styles.themeWrapper} ${theme === 'dark' ? styles.dark : ''}`}>
@@ -304,15 +315,15 @@ const Redactor = () => {
             )}
 
             <input
-              id="file-upload"
+              id="file-select"
               type="file"
               accept="application/pdf"
               onChange={handleFileChange}
               ref={fileInputRef}
               className={styles.hiddenInput}
             />
-            <label htmlFor="file-upload" className={`${styles.buttonBase} ${styles.uploadButton}`}>
-              Upload File
+            <label htmlFor="file-select" className={`${styles.buttonBase} ${styles.uploadButton}`}>
+              Select File
             </label>
 
             <button
@@ -361,7 +372,7 @@ const Redactor = () => {
 
                   <div className={styles.infoActions}>
                     {!pdfjsDoc ? (
-                      <label htmlFor="file-upload" className={`${styles.buttonBase} ${styles.downloadButton}`}>
+                      <label htmlFor="file-select" className={`${styles.buttonBase} ${styles.downloadButton}`}>
                         Select a PDF to Begin
                       </label>
                     ) : (
