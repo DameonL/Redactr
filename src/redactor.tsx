@@ -5,8 +5,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import styles from "./assets/redactor.module.css";
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { rasterizePDF } from './pdfRasterize.js';
-import { redactTextInStreams, type PdfRect, redactionDebugLog } from './textRedaction.js';
-import { redactImagesInStream } from './imageRedaction.js';
+import { redactContentStream, type PdfRect, redactionDebugLog } from './textRedaction.js';
 import { rgb } from 'pdf-lib';
 import { PdfDeepInspector, PdfInspectorPanel } from './pdfInspector.js';
 
@@ -228,8 +227,7 @@ const Redactor = () => {
       const pageResources = pdfPage.node.lookupMaybe(PDFName.of('Resources'), PDFDict);
 
       for (const ref of contentRefs) {
-        redactTextInStreams(pdfDoc, ref, pdfRect, pageResources);
-        await redactImagesInStream(pdfDoc, ref, pdfRect, pageResources ?? undefined);
+        await redactContentStream(pdfDoc, ref, pdfRect, pageResources);
       }
 
       // Draw an opaque black rectangle over the selection (visual + image redaction layer)

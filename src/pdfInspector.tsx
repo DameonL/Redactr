@@ -117,6 +117,10 @@ export function PdfInspectorPanel(props: { pdfProxy: PDFDocumentProxy; pageNumbe
   );
 }
 
+import * as pdfjsLib from 'pdfjs-dist';
+
+// ... (existing interfaces)
+
 export function PdfDeepInspector({ pdfProxy, pageNumber }: { pdfProxy: any; pageNumber: number }) {
   const [log, setLog] = useState<any[]>([]);
 
@@ -124,30 +128,42 @@ export function PdfDeepInspector({ pdfProxy, pageNumber }: { pdfProxy: any; page
     const analyze = async () => {
       const page = await pdfProxy.getPage(pageNumber);
       const opList = await page.getOperatorList();
-      const { OPS } = (window as any).pdfjsLib;
+      const { OPS } = pdfjsLib;
       const results: any[] = [];
-      let currentMatrix = [1, 0, 0, 1, 0, 0];
+      
+      let ctm = [1, 0, 0, 1, 0, 0];
+      let tm = [1, 0, 0, 1, 0, 0];
       let tlm = [1, 0, 0, 1, 0, 0];
+      const gStack: any[] = [];
+
+      const matMul = (m: number[], c: number[]) => [
+        m[0] * c[0] + m[1] * c[2],
+        m[0] * c[1] + m[1] * c[3],
+        m[2] * c[0] + m[3] * c[2],
+        m[2] * c[1] + m[3] * c[3],
+        m[4] * c[0] + m[5] * c[2] + c[4],
+        m[4] * c[1] + m[5] * c[3] + c[5],
+      ];
 
       for (let i = 0; i < opList.fnArray.length; i++) {
         const fn = opList.fnArray[i];
         const args = opList.argsArray[i];
-        if (fn === OPS.setTextMatrix) {
-          currentMatrix = args[0];
-          tlm = [...currentMatrix];
-        } else if (fn === OPS.moveText || fn === OPS.moveTextSetLeading) {
-          tlm[4] += args[0];
-          tlm[5] += args[1];
-          currentMatrix = [...tlm];
-        } else if (fn === OPS.showText || fn === OPS.showSpacedText) {
+        
+        if (fn === OPS.save) gStack.push([...ctm]);
+        else if (fn === OPS.restore) ctm = gStack.pop() || [1,0,0,1,0,0];
+        else if (fn === OPS.transform) ctm = matMul(args[0], ctm);
+        else if (fn === OPS.beginText) { tm = [1,0,0,1,0,0]; tlm = [1,0,0,1,0,0]; }
+        else if (fn === OPS.setTextMatrix) { tm = args[0]; tlm = [...tm]; }
+        else if (fn === OPS.moveText) { tlm = matMul([1, 0, 0, 1, args[0], args[1]], tlm); tm = [...tlm]; }
+        else if (fn === OPS.showText || fn === OPS.showSpacedText) {
+          const trm = matMul(tm, ctm);
           const glyphs = args[0];
           const text = Array.isArray(glyphs)
-            ? glyphs.map((g: any) => (typeof g === 'object' && g ? (g.unicode || '') : '')).join('')
+            ? glyphs.map((g: any) => (typeof g === 'object' && g ? (g.unicode || '') : (typeof g === 'string' ? g : ''))).join('')
             : typeof glyphs === 'string' ? glyphs : '';
-          results.push({ op: fn === OPS.showText ? 'showText' : 'showSpacedText', y: currentMatrix[5], x: currentMatrix[4], text, raw: glyphs });
+          results.push({ op: fn === OPS.showText ? 'showText' : 'showSpacedText', y: trm[5], x: trm[4], text, raw: glyphs });
         }
       }
-      console.log(results);
       setLog(results);
     };
     analyze();
