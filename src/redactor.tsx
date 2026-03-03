@@ -29,7 +29,7 @@ const RedactionLog = () => {
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ textAlign: 'left', color: '#aaa' }}>
-            <th>Text</th><th>X</th><th>Y</th><th>Status</th><th>Reason</th>
+            <th>Text</th><th>X</th><th>Y</th><th>Status</th><th>Reason</th><th>Details</th>
           </tr>
         </thead>
         <tbody>
@@ -40,6 +40,7 @@ const RedactionLog = () => {
               <td style={{ padding: '4px' }}>{l.curY.toFixed(1)}</td>
               <td style={{ padding: '4px' }}>{l.accepted ? 'REDACTED' : 'SKIPPED'}</td>
               <td style={{ padding: '4px' }}>{l.reason}</td>
+              <td style={{ padding: '4px', color: '#888' }}>{l.details || ''}</td>
             </tr>
           ))}
         </tbody>

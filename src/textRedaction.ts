@@ -16,6 +16,7 @@ export interface RedactionLogEntry {
   rect: PdfRect;
   accepted: boolean;
   reason: string;
+  details?: string;
 }
 
 export const redactionDebugLog: RedactionLogEntry[] = [];
@@ -30,13 +31,13 @@ const encode = (s: string) => {
 type Matrix = [number, number, number, number, number, number];
 const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
 
-const matMul = (c: Matrix, m: Matrix): Matrix => [
-  c[0] * m[0] + c[1] * m[2],
-  c[0] * m[1] + c[1] * m[3],
-  c[2] * m[0] + c[3] * m[2],
-  c[2] * m[1] + c[3] * m[3],
-  c[4] * m[0] + c[5] * m[2] + m[4],
-  c[4] * m[1] + c[5] * m[3] + m[5],
+const matMul = (m: Matrix, c: Matrix): Matrix => [
+  m[0] * c[0] + m[1] * c[2],
+  m[0] * c[1] + m[1] * c[3],
+  m[2] * c[0] + m[3] * c[2],
+  m[2] * c[1] + m[3] * c[3],
+  m[4] * c[0] + m[5] * c[2] + c[4],
+  m[4] * c[1] + m[5] * c[3] + c[5],
 ];
 
 function parsePdfString(s: string) {
@@ -90,7 +91,7 @@ function parsePdfString(s: string) {
   return chars;
 }
 
-export const surgicalStrip = (data: Uint8Array, pdfRect: PdfRect): Uint8Array => {
+export const surgicalStrip = (data: Uint8Array, pdfRect: PdfRect, initialCtm: Matrix = [...IDENTITY]): Uint8Array => {
   const streamString = LATIN1.decode(data);
   const outputChunks: Uint8Array[] = [];
   let lastIndex = 0;
@@ -101,7 +102,7 @@ export const surgicalStrip = (data: Uint8Array, pdfRect: PdfRect): Uint8Array =>
   const xMax = pdfRect.rX + pdfRect.rW + 1;
 
   let stack: Matrix[] = [];
-  let ctm: Matrix = [...IDENTITY];
+  let ctm: Matrix = [...initialCtm];
   let tm: Matrix = [...IDENTITY];
   let tlm: Matrix = [...IDENTITY];
   let fontSize = 10;
@@ -127,8 +128,8 @@ export const surgicalStrip = (data: Uint8Array, pdfRect: PdfRect): Uint8Array =>
       const op = m[2];
       const args = getNums(m[1]!);
       if (op === 'q') stack.push([...ctm]);
-      else if (op === 'Q') ctm = stack.pop() || [...IDENTITY];
-      else if (op === 'cm' && args.length >= 6) ctm = matMul(ctm, args as any);
+      else if (op === 'Q') ctm = stack.pop() || [...initialCtm];
+      else if (op === 'cm' && args.length >= 6) ctm = matMul(args as any, ctm);
       else if (op === 'BT') { tm = [...IDENTITY]; tlm = [...IDENTITY]; }
       else if (op === 'Tm' && args.length >= 6) { tm = args as any; tlm = [...tm]; }
       else if (op === 'Tf' && args.length >= 2) { fontSize = args[1]!; }
@@ -264,7 +265,8 @@ export const redactTextInStreams = (
   pdfDoc: PDFDocument,
   streamRef: PDFRef,
   pdfRect: PdfRect,
-  resourcesDict?: PDFDict
+  resourcesDict?: PDFDict,
+  initialCtm: Matrix = [...IDENTITY]
 ): void => {
   const stream = pdfDoc.context.lookup(streamRef, PDFStream) as PDFRawStream;
   if (!stream || !(stream instanceof PDFRawStream)) return;
@@ -298,7 +300,7 @@ export const redactTextInStreams = (
     }
   }
 
-  const newBytes = surgicalStrip(bytes, pdfRect);
+  const newBytes = surgicalStrip(bytes, pdfRect, initialCtm);
   const compressed = pako.deflate(newBytes);
   (stream as any).contents = compressed;
   stream.dict.set(PDFName.of('Filter'), PDFName.of('FlateDecode'));
