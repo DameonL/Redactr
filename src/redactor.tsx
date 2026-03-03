@@ -45,6 +45,7 @@ const Redactor = () => {
   const [rasterizeOutput, setRasterizeOutput] = useState(false);
   const [loadedPdfjsLib, setLoadedPdfjsLib] = useState<PDFJSModule | null>(null);
   const [loadedPdfLib, setLoadedPdfLib] = useState<PDFLibModule | null>(null);
+  const [pendingRedactions, setPendingRedactions] = useState<Map<number, PdfRect[]>>(new Map());
 
   useEffect(() => {
     document.title = "Redactr";
@@ -88,6 +89,22 @@ const Redactor = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+
+      // Draw pending redactions for this page
+      const pagePending = pendingRedactions.get(pageNum) || [];
+      for (const rect of pagePending) {
+        const [x1, y1] = viewport.convertToViewportPoint(rect.rX, rect.rY);
+        const [x2, y2] = viewport.convertToViewportPoint(rect.rX + rect.rW, rect.rY + rect.rH);
+        
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(
+          Math.min(x1, x2),
+          Math.min(y1, y2),
+          Math.abs(x2 - x1),
+          Math.abs(y2 - y1)
+        );
+      }
 
       if (overlayRect) {
         ctx.strokeStyle = '#ef4444';
@@ -195,43 +212,83 @@ const Redactor = () => {
     setIsDrawing(false);
     setCurrentRect(null);
 
+    // If it's a small click, try to remove an existing redaction
+    if (Math.abs(currentRect.width) < 5 && Math.abs(currentRect.height) < 5) {
+      const point = await canvasRectToPdf({ ...currentRect, width: 1, height: 1 });
+      if (point) {
+        setPendingRedactions(prev => {
+          const next = new Map(prev);
+          const pagePending = next.get(currentPageNum) || [];
+          const hitIdx = pagePending.findIndex(r => 
+            point.rX >= r.rX && point.rX <= r.rX + r.rW &&
+            point.rY >= r.rY && point.rY <= r.rY + r.rH
+          );
+          if (hitIdx !== -1) {
+            const updated = [...pagePending];
+            updated.splice(hitIdx, 1);
+            if (updated.length === 0) next.delete(currentPageNum);
+            else next.set(currentPageNum, updated);
+          }
+          return next;
+        });
+      }
+      return;
+    }
+
     const pdfRect = await canvasRectToPdf(currentRect);
     if (!pdfRect || pdfRect.rW < 1 || pdfRect.rH < 1) {
       renderPage(currentPageNum, loadedPdfjsLib, loadedPdfLib.PDFDocument, pdfjsDoc, pdfDoc);
       return;
     }
 
+    setPendingRedactions(prev => {
+      const next = new Map(prev);
+      const pagePending = next.get(currentPageNum) || [];
+      next.set(currentPageNum, [...pagePending, pdfRect]);
+      return next;
+    });
+  };
+
+  const applyRedactions = async () => {
+    if (!pdfDoc || !loadedPdfLib || !loadedPdfjsLib || pendingRedactions.size === 0) return;
+
+    setIsRendering(true);
     redactionDebugLog.length = 0;
 
     try {
       const { PDFArray: PDFArrayCls, PDFName: PDFNameCls, PDFDict: PDFDictCls, PDFRef: PDFRefCls, rgb } = loadedPdfLib;
-      const pdfPage = pdfDoc.getPage(currentPageNum - 1);
-      const contents = pdfPage.node.lookup(PDFNameCls.of('Contents'));
-      const contentRefs: PDFRef[] = [];
 
-      if (contents instanceof PDFArrayCls) {
-        for (let i = 0; i < contents.size(); i++) {
-          const ref = contents.get(i);
-          if (ref instanceof PDFRefCls) contentRefs.push(ref);
+      for (const [pageNum, rects] of pendingRedactions.entries()) {
+        const pdfPage = pdfDoc.getPage(pageNum - 1);
+        const pageResources = pdfPage.node.lookupMaybe(PDFNameCls.of('Resources'), PDFDictCls);
+        
+        // Find content refs for this page
+        const contents = pdfPage.node.lookup(PDFNameCls.of('Contents'));
+        const contentRefs: PDFRef[] = [];
+        if (contents instanceof PDFArrayCls) {
+          for (let i = 0; i < contents.size(); i++) {
+            const ref = contents.get(i);
+            if (ref instanceof PDFRefCls) contentRefs.push(ref);
+          }
+        } else if (contents instanceof PDFRefCls) {
+          contentRefs.push(contents);
         }
-      } else {
-        const ref = pdfPage.node.get(PDFNameCls.of('Contents'));
-        if (ref instanceof PDFRefCls) contentRefs.push(ref);
+
+        for (const rect of rects) {
+          // Scrub content
+          for (const ref of contentRefs) {
+            await redactContentStream(loadedPdfLib, pdfDoc, ref, rect, pageResources);
+          }
+          // Draw black box
+          pdfPage.drawRectangle({
+            x: rect.rX,
+            y: rect.rY,
+            width: rect.rW,
+            height: rect.rH,
+            color: rgb(0, 0, 0),
+          });
+        }
       }
-
-      const pageResources = pdfPage.node.lookupMaybe(PDFNameCls.of('Resources'), PDFDictCls);
-
-      for (const ref of contentRefs) {
-        await redactContentStream(loadedPdfLib, pdfDoc, ref, pdfRect, pageResources);
-      }
-
-      pdfPage.drawRectangle({
-        x: pdfRect.rX,
-        y: pdfRect.rY,
-        width: pdfRect.rW,
-        height: pdfRect.rH,
-        color: rgb(0, 0, 0),
-      });
 
       pdfDoc.setTitle('');
       pdfDoc.setAuthor('');
@@ -248,8 +305,11 @@ const Redactor = () => {
       const loadedPdfDoc = await loadedPdfLib.PDFDocument.load(newBytes.slice(0));
       setPdfjsDoc(loadedPdfjsDoc);
       setPdfDoc(loadedPdfDoc);
+      setPendingRedactions(new Map());
     } catch (e) {
       console.error(e);
+    } finally {
+      setIsRendering(false);
     }
   };
 
@@ -278,7 +338,7 @@ const Redactor = () => {
     if (pdfjsDoc && pdfDoc && !renderTaskRef.current && !showInfo && loadedPdfjsLib && loadedPdfLib) {
       renderPage(currentPageNum, loadedPdfjsLib, loadedPdfLib.PDFDocument, pdfjsDoc, pdfDoc);
     }
-  }, [currentPageNum, pdfjsDoc, pdfDoc, renderScale, showInfo, loadedPdfjsLib, loadedPdfLib]);
+  }, [currentPageNum, pdfjsDoc, pdfDoc, renderScale, showInfo, loadedPdfjsLib, loadedPdfLib, pendingRedactions]);
 
   return (
     <div className={`${styles.themeWrapper} ${theme === 'dark' ? styles.dark : ''}`}>
@@ -313,6 +373,18 @@ const Redactor = () => {
                 <option value="2">2x Quality</option>
                 <option value="3">3x Quality</option>
               </select>
+            )}
+
+            {pendingRedactions.size > 0 && (
+              <button
+                onClick={applyRedactions}
+                disabled={isRendering}
+                className={`${styles.buttonBase} ${styles.downloadButton}`}
+                style={{ background: '#10b981', borderColor: '#059669' }}
+              >
+                <Icons.Check />
+                Apply Redactions
+              </button>
             )}
 
             <input
