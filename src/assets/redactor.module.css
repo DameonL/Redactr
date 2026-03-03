@@ -8,20 +8,20 @@
     --panel-bg: #ffffff;
     --border-color: #e0e0e0;
     --btn-hover: #f0f0f0;
-    
+
     --canvas-bg: #ffffff;
-    --canvas-shadow: 0px 10px 30px rgba(0,0,0,0.15);
-    
+    --canvas-shadow: 0px 10px 30px rgba(0, 0, 0, 0.15);
+
     --toolbar-bg: rgba(255, 255, 255, 0.85);
-    --toolbar-border: rgba(0,0,0,0.05);
-    --toolbar-shadow: 0 4px 20px rgba(0,0,0,0.1);
-    
+    --toolbar-border: rgba(0, 0, 0, 0.05);
+    --toolbar-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+
     --log-bg: #f8f9fa;
     --log-text: #006400;
     --log-border: #dddddd;
     --log-subtext: #666666;
     --log-err: #ee3333;
-    
+
     --input-bg: #f5f5f5;
     --upload-bg: #e5e7eb;
 
@@ -38,19 +38,19 @@
     --panel-bg: #1e1e1e;
     --border-color: #333333;
     --btn-hover: #333333;
-    
+
     --canvas-bg: #18181b;
-    --canvas-shadow: 0px 10px 30px rgba(0,0,0,0.8);
-    
+    --canvas-shadow: 0px 10px 30px rgba(0, 0, 0, 0.8);
+
     --toolbar-bg: rgba(30, 30, 30, 0.85);
-    --toolbar-border: rgba(255,255,255,0.1);
-    --toolbar-shadow: 0 4px 20px rgba(0,0,0,0.5);
-    
+    --toolbar-border: rgba(255, 255, 255, 0.1);
+    --toolbar-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+
     --log-bg: #111111;
     --log-text: #00ff00;
     --log-border: #333333;
     --log-subtext: #aaaaaa;
-    
+
     --input-bg: #333333;
     --upload-bg: #333333;
 }
@@ -116,6 +116,7 @@
     border-radius: 6px;
     font-weight: 500;
 }
+
 .uploadButton:hover {
     background-color: var(--btn-hover);
 }
@@ -128,9 +129,11 @@
     font-weight: 500;
     gap: 6px;
 }
+
 .downloadButton:hover:not(:disabled) {
     background-color: #2563eb;
 }
+
 .downloadButton:disabled {
     opacity: 0.6;
     cursor: not-allowed;
@@ -150,6 +153,65 @@
     border: 1px solid var(--border-color);
     border-radius: 4px;
     padding: 4px 8px;
+}
+
+/* ====================
+   INFO / WELCOME DIALOG
+==================== */
+.infoWrapper {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+}
+
+.infoCard {
+    background: var(--panel-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 40px;
+    max-width: 650px;
+    box-shadow: var(--canvas-shadow);
+    text-align: left;
+}
+
+.infoTitle {
+    font-size: 1.5rem;
+    font-weight: bold;
+    margin-top: 0;
+    margin-bottom: 24px;
+    color: var(--text-color);
+}
+
+.infoSection {
+    margin-bottom: 24px;
+}
+
+.infoSection h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 0 0 8px 0;
+    color: var(--text-color);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.infoSection p {
+    margin: 0;
+    color: var(--log-subtext);
+    line-height: 1.6;
+    font-size: 0.95rem;
+}
+
+.infoActions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 30px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border-color);
 }
 
 /* ====================
@@ -221,6 +283,7 @@
     cursor: pointer;
     transition: background 0.2s;
 }
+
 .iconButton:hover {
     background: var(--btn-hover);
 }
