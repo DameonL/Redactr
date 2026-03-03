@@ -6,7 +6,6 @@ import styles from "./assets/redactor.module.css";
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { rasterizePDF } from './pdfRasterize.js';
 import { redactContentStream, type PdfRect, redactionDebugLog } from './textRedaction.js';
-import { PdfDeepInspector, PdfInspectorPanel } from './pdfInspector.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdfWorker.js";
 
@@ -22,43 +21,6 @@ const Icons = {
   Image: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z" /></svg>,
   Check: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>,
   Tag: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M21.41 11.58l-9-9C12.05 2.22 11.55 2 11 2H4c-1.1 0-2 .9-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58.55 0 1.05-.22 1.41-.59l7-7c.37-.36.59-.86.59-1.41 0-.55-.23-1.06-.59-1.42zM5.5 7C4.67 7 4 6.33 4 5.5S4.67 4 5.5 4 7 4.67 7 5.5 6.33 7 5.5 7z" /></svg>
-};
-
-const RedactionLog = () => {
-  const [logs, setLogs] = useState(redactionDebugLog.slice());
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (redactionDebugLog.length !== logs.length) {
-        setLogs(redactionDebugLog.slice());
-      }
-    }, 500);
-    return () => clearInterval(interval);
-  }, [logs.length]);
-
-  return (
-    <div className={styles.logContainer}>
-      <h3 className={styles.logHeader}>Redaction Debug Log ({logs.length} entries)</h3>
-      <table className={styles.logTable}>
-        <thead>
-          <tr className={styles.logTableHeader}>
-            <th>Text</th><th>X</th><th>Y</th><th>Status</th><th>Reason</th><th>Details</th>
-          </tr>
-        </thead>
-        <tbody>
-          {logs.slice().reverse().map((l, i) => (
-            <tr key={i} className={styles.logTableRow} style={{ color: l.accepted ? 'var(--log-text)' : 'var(--log-err)' }}>
-              <td className={styles.logTableCell}>{l.text}</td>
-              <td className={styles.logTableCell}>{l.curX.toFixed(1)}</td>
-              <td className={styles.logTableCell}>{l.curY.toFixed(1)}</td>
-              <td className={styles.logTableCell} style={{ fontWeight: 'bold' }}>{l.accepted ? 'REDACTED' : 'SKIPPED'}</td>
-              <td className={styles.logTableCell}>{l.reason}</td>
-              <td className={`${styles.logTableCell} ${styles.logDetails}`}>{l.details || ''}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
 };
 
 const Redactor = () => {
