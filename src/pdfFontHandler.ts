@@ -3,11 +3,15 @@ import { type PDFLibModule } from './redactor.js';
 
 export interface CustomFontMetrics {
   unitsPerEm: number;
-  getGlyph(codePoint: number): { advanceWidth: number };
+  ascent: number;
+  descent: number;
+  getGlyph(codePoint: number): { advanceWidth: number; bbox?: { minX: number; minY: number; maxX: number; maxY: number } };
 }
 
 class AfmFontWrapper implements CustomFontMetrics {
   unitsPerEm: number = 1000;
+  ascent: number = 900;
+  descent: number = -300;
   private charMetrics: Map<number, { width: number }>;
 
   constructor(afmFontData: Array<{ charCode: number; width: number; name: string }>) {
@@ -19,10 +23,14 @@ class AfmFontWrapper implements CustomFontMetrics {
     }
   }
 
-  getGlyph(codePoint: number): { advanceWidth: number } {
+  getGlyph(codePoint: number): { advanceWidth: number; bbox?: { minX: number; minY: number; maxX: number; maxY: number } } {
     const metric = this.charMetrics.get(codePoint);
     if (metric) {
-      return { advanceWidth: metric.width };
+      return { 
+        advanceWidth: metric.width,
+        // AFM usually doesn't give us bboxes easily here, we could add them if needed
+        // but for now we'll just return the width and let the caller fall back
+      };
     }
     return { advanceWidth: 250 };
   }
@@ -57,16 +65,30 @@ export async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: PDFDocument, 
   try {
     const fontDict = pdfDoc.context.lookup(fontRef, PDFLib.PDFDict);
     const descriptorRef = fontDict.get(PDFLib.PDFName.of('FontDescriptor'));
-    if (!(descriptorRef instanceof PDFLib.PDFRef)) {
-      fontCache.set(refStr, null);
-      return null;
+    let ascent = 800;
+    let descent = -200;
+
+    if (descriptorRef instanceof PDFLib.PDFRef) {
+      const descriptor = pdfDoc.context.lookup(descriptorRef, PDFLib.PDFDict);
+      const pdfAscent = descriptor.get(PDFLib.PDFName.of('Ascent'));
+      const pdfDescent = descriptor.get(PDFLib.PDFName.of('Descent'));
+      if (pdfAscent instanceof PDFLib.PDFNumber) ascent = pdfAscent.asNumber();
+      if (pdfDescent instanceof PDFLib.PDFNumber) descent = pdfDescent.asNumber();
     }
 
-    const descriptor = pdfDoc.context.lookup(descriptorRef, PDFLib.PDFDict);
-    const fontStreamRef = descriptor.get(PDFLib.PDFName.of('FontFile2')) || descriptor.get(PDFLib.PDFName.of('FontFile3'));
+    const fontStreamRef = (descriptorRef instanceof PDFLib.PDFRef) ? 
+        (pdfDoc.context.lookup(descriptorRef, PDFLib.PDFDict).get(PDFLib.PDFName.of('FontFile2')) || 
+         pdfDoc.context.lookup(descriptorRef, PDFLib.PDFDict).get(PDFLib.PDFName.of('FontFile3'))) : null;
+
     if (!(fontStreamRef instanceof PDFLib.PDFRef)) {
-      fontCache.set(refStr, null);
-      return null;
+      const fontWrapper: CustomFontMetrics = {
+        unitsPerEm: 1000,
+        ascent,
+        descent,
+        getGlyph: (codePoint: number) => ({ advanceWidth: 600 })
+      };
+      fontCache.set(refStr, fontWrapper);
+      return fontWrapper;
     }
 
     const fontStream = pdfDoc.context.lookup(fontStreamRef, PDFLib.PDFStream) as PDFRawStream;
@@ -84,9 +106,19 @@ export async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: PDFDocument, 
 
     const fontWrapper: CustomFontMetrics = {
       unitsPerEm: fkFont.unitsPerEm || 1000,
+      ascent: fkFont.ascent || ascent,
+      descent: fkFont.descent || descent,
       getGlyph: (codePoint: number) => {
         const glyph = fkFont.glyphForCodePoint(codePoint);
-        return { advanceWidth: glyph ? glyph.advanceWidth : 0 };
+        return { 
+          advanceWidth: glyph ? glyph.advanceWidth : 0,
+          bbox: glyph ? { 
+            minX: glyph.bbox.minX, 
+            minY: glyph.bbox.minY, 
+            maxX: glyph.bbox.maxX, 
+            maxY: glyph.bbox.maxY 
+          } : undefined
+        };
       }
     };
 

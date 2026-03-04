@@ -186,29 +186,60 @@ export const redactContentStream = async (
           const chars = parsePdfString(strBytes);
           for (const char of chars) {
             let advanceWidth = fontSize * 0.6;
+            let glyphBBox: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
             if (currentFont) {
               try {
                 const glyph = currentFont.getGlyph(char.value);
                 if (glyph && typeof glyph.advanceWidth === 'number' && !isNaN(glyph.advanceWidth)) {
                   advanceWidth = (glyph.advanceWidth / (currentFont.unitsPerEm || 1000)) * fontSize;
+                  if (glyph.bbox) {
+                    glyphBBox = {
+                      minX: (glyph.bbox.minX / currentFont.unitsPerEm) * fontSize,
+                      minY: (glyph.bbox.minY / currentFont.unitsPerEm) * fontSize,
+                      maxX: (glyph.bbox.maxX / currentFont.unitsPerEm) * fontSize,
+                      maxY: (glyph.bbox.maxY / currentFont.unitsPerEm) * fontSize,
+                    };
+                  }
                 }
               } catch { }
             }
             if (isNaN(advanceWidth) || !isFinite(advanceWidth)) advanceWidth = fontSize * 0.6;
 
             const trm = matMul(localTm, ctm);
-            const curX = trm[4], curY = trm[5];
             const scaleX = Math.sqrt(trm[0] * trm[0] + trm[1] * trm[1]);
             const scaleY = Math.sqrt(trm[2] * trm[2] + trm[3] * trm[3]);
-            const actualAdvance = advanceWidth * scaleX;
-            const actualFontSize = fontSize * scaleY;
 
-            const bbox = {
-              xMin: Math.min(curX, curX + actualAdvance),
-              xMax: Math.max(curX, curX + actualAdvance),
-              yMin: curY - actualFontSize * 0.3,
-              yMax: curY + actualFontSize * 0.9
-            };
+            let bbox;
+            if (glyphBBox) {
+              // Transform glyph points by the current matrix to get the page-space bounding box
+              // Simplified transform (assuming mostly non-rotated text)
+              const p1 = matMul([1, 0, 0, 1, glyphBBox.minX, glyphBBox.minY], trm);
+              const p2 = matMul([1, 0, 0, 1, glyphBBox.maxX, glyphBBox.maxY], trm);
+              bbox = {
+                xMin: Math.min(p1[4], p2[4]),
+                xMax: Math.max(p1[4], p2[4]),
+                yMin: Math.min(p1[5], p2[5]),
+                yMax: Math.max(p1[5], p2[5])
+              };
+            } else {
+              const curX = trm[4], curY = trm[5];
+              const actualAdvance = advanceWidth * scaleX;
+              let ascent = 0.9 * fontSize;
+              let descent = -0.3 * fontSize;
+              if (currentFont) {
+                ascent = (currentFont.ascent / currentFont.unitsPerEm) * fontSize;
+                descent = (currentFont.descent / currentFont.unitsPerEm) * fontSize;
+              }
+              const scaledAscent = ascent * scaleY;
+              const scaledDescent = descent * scaleY;
+
+              bbox = {
+                xMin: Math.min(curX, curX + actualAdvance),
+                xMax: Math.max(curX, curX + actualAdvance),
+                yMin: curY + Math.min(scaledAscent, scaledDescent),
+                yMax: curY + Math.max(scaledAscent, scaledDescent)
+              };
+            }
 
             const inBox = pdfRects.some(r => rectsOverlap(bbox, r));
             if (inBox) {
