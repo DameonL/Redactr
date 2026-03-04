@@ -58,6 +58,7 @@ const Redactor = () => {
   const [currentPageNum, setCurrentPageNum] = useState<number>(1);
   const [pdfBytes, setPdfBytes] = useState<Uint8Array | null>(null);
   const [isRendering, setIsRendering] = useState(false);
+  const [isSlowProcessing, setIsSlowProcessing] = useState(false);
   const [renderScale, setRenderScale] = useState(1.5);
   const [downloadScale, setDownloadScale] = useState(1.5);
   const [rasterizeOutput, setRasterizeOutput] = useState(false);
@@ -74,6 +75,27 @@ const Redactor = () => {
   const [templates, setTemplates] = useState<RedactionTemplate[]>([]);
   const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
   const [currentViewport, setCurrentViewport] = useState<any>(null);
+
+  const slowProcessTimerRef = useRef<number | null>(null);
+
+  const startProcessing = () => {
+    setIsSlowProcessing(false);
+    if (pdfBytes && pdfBytes.length > 500000) {
+      setIsSlowProcessing(true);
+    } else {
+      slowProcessTimerRef.current = window.setTimeout(() => {
+        setIsSlowProcessing(true);
+      }, 3000);
+    }
+  };
+
+  const stopProcessing = () => {
+    if (slowProcessTimerRef.current) {
+      clearTimeout(slowProcessTimerRef.current);
+      slowProcessTimerRef.current = null;
+    }
+    setIsSlowProcessing(false);
+  };
 
   const {
     isDrawing,
@@ -238,22 +260,27 @@ const Redactor = () => {
 
   const onApplyRedactions = async (preview: boolean = false) => {
     const utils = await getRedactionUtils();
-    if (preview) {
-        if (pdfBytes) setPrePreviewBytes(pdfBytes);
-        await utils.applyRedactions(
-            pdfDoc, loadedPdfLib, loadedPdfjsLib, pdfjsDoc, pendingRedactions, setIsRendering,
-            setPdfBytes, setPdfjsDoc, setPdfDoc, setPendingRedactions, setActionHistory,
-            true
-        );
-        setPreviewMode(true);
-    } else {
-        await utils.applyRedactions(
-            pdfDoc, loadedPdfLib, loadedPdfjsLib, pdfjsDoc, pendingRedactions, setIsRendering,
-            setPdfBytes, setPdfjsDoc, setPdfDoc, setPendingRedactions, setActionHistory,
-            false
-        );
-        setPreviewMode(false);
-        setPrePreviewBytes(null);
+    startProcessing();
+    try {
+      if (preview) {
+          if (pdfBytes) setPrePreviewBytes(pdfBytes);
+          await utils.applyRedactions(
+              pdfDoc, loadedPdfLib, loadedPdfjsLib, pdfjsDoc, pendingRedactions, setIsRendering,
+              setPdfBytes, setPdfjsDoc, setPdfDoc, setPendingRedactions, setActionHistory,
+              true
+          );
+          setPreviewMode(true);
+      } else {
+          await utils.applyRedactions(
+              pdfDoc, loadedPdfLib, loadedPdfjsLib, pdfjsDoc, pendingRedactions, setIsRendering,
+              setPdfBytes, setPdfjsDoc, setPdfDoc, setPendingRedactions, setActionHistory,
+              false
+          );
+          setPreviewMode(false);
+          setPrePreviewBytes(null);
+      }
+    } finally {
+      stopProcessing();
     }
   };
 
@@ -265,10 +292,15 @@ const Redactor = () => {
 
   const onAutoRedact = async (text: string) => {
     const utils = await getRedactionUtils();
-    utils.autoRedactText(
-      text, pdfjsDoc, pdfDoc, loadedPdfjsLib, loadedPdfLib, pendingRedactions,
-      actionHistory, setIsRendering, setPendingRedactions, setActionHistory
-    );
+    startProcessing();
+    try {
+      await utils.autoRedactText(
+        text, pdfjsDoc, pdfDoc, loadedPdfjsLib, loadedPdfLib, pendingRedactions,
+        actionHistory, setIsRendering, setPendingRedactions, setActionHistory
+      );
+    } finally {
+      stopProcessing();
+    }
   };
 
   const onSaveTemplate = (name: string, pattern: string, isRegex: boolean, applyToAll: boolean) => {
@@ -380,6 +412,13 @@ const Redactor = () => {
                   <div className={styles.loadingOverlay}>
                     <div className={styles.spinner} />
                     <div className={styles.loadingText}>Processing Redactions...</div>
+                    {isSlowProcessing && (
+                      <div className={styles.loadingSubtext}>
+                        {pdfBytes && pdfBytes.length > 500000 
+                          ? "This is a large document, processing may take a moment."
+                          : "Large or complex documents can take a while to process. Please wait..."}
+                      </div>
+                    )}
                   </div>
                 )}
                 <canvas

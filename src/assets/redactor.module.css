@@ -390,6 +390,14 @@ body {
     color: var(--text-color);
 }
 
+.loadingSubtext {
+    font-size: 0.85rem;
+    color: var(--log-subtext);
+    text-align: center;
+    max-width: 250px;
+    line-height: 1.4;
+}
+
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
