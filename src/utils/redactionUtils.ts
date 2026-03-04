@@ -3,8 +3,12 @@ import type { PDFDocument, PDFRef, PDFDict } from 'pdf-lib';
 import { type PDFLibModule } from '../redactor.js';
 import { type PdfRect } from '../types/pdf.js';
 import { redactContentStream, redactionDebugLog } from '../pdfStreamRedactor.js';
-import pako from 'pako';
 import { concatUint8Arrays } from './pdfHelpers.js';
+
+let pakoLib: any = null;
+async function loadPako() {
+  if (!pakoLib) pakoLib = (await import('pako')).default;
+}
 
 export const applyRedactions = async (
   pdfDoc: PDFDocument | null,
@@ -55,7 +59,12 @@ export const applyRedactions = async (
             let b = stream.contents;
             const f = stream.dict.lookup(PDFNameCls.of('Filter'));
             const isF = f === PDFNameCls.of('FlateDecode') || (f instanceof PDFArrayCls && f.asArray().some((v: any) => v === PDFNameCls.of('FlateDecode')));
-            if (isF) { try { b = pako.inflate(b); } catch { } }
+            if (isF) { 
+              try { 
+                await loadPako();
+                b = pakoLib.inflate(b); 
+              } catch { } 
+            }
             allBytes.push(b);
             allBytes.push(new Uint8Array([10]));
           }
@@ -70,7 +79,7 @@ export const applyRedactions = async (
       } else {
         targetRef = contentRefs[0]!;
       }
-      
+
       await redactContentStream(loadedPdfLib, pdfDoc, targetRef, rects, pageResources, [1, 0, 0, 1, 0, 0], pdfjsDoc, pageNum);
 
       for (const rect of rects) {

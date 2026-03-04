@@ -5,23 +5,40 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import styles from "./assets/redactor.module.css";
 import { type PdfRect } from './types/pdf.js';
 
-// Sub-components
+// Sub-components (UI is small, keep them static)
 import { Header } from './components/Header.js';
 import { Toolbar } from './components/Toolbar.js';
 import { InfoDialog } from './components/InfoDialog.js';
 import { ShortcutsDialog } from './components/ShortcutsDialog.js';
 
-// Utils
-import { renderPdfToBuffer, renderOverlays } from './utils/renderingUtils.js';
-import { applyRedactions, autoRedactText } from './utils/redactionUtils.js';
+// Utils - Keep light utils static
 import { initPdf, handleFileChange } from './utils/pdfInitUtils.js';
-import { downloadRedactedPdf } from './utils/downloadUtils.js';
 
 // Hooks
 import { useRedactorEvents } from './hooks/useRedactorEvents.js';
 
 export type PDFJSModule = typeof import('pdfjs-dist');
 export type PDFLibModule = typeof import('pdf-lib');
+
+// Caches for dynamically loaded modules
+let cachedRedactionUtils: any = null;
+let cachedRenderingUtils: any = null;
+let cachedDownloadUtils: any = null;
+
+async function getRedactionUtils() {
+  if (!cachedRedactionUtils) cachedRedactionUtils = await import('./utils/redactionUtils.js');
+  return cachedRedactionUtils;
+}
+
+async function getRenderingUtils() {
+  if (!cachedRenderingUtils) cachedRenderingUtils = await import('./utils/renderingUtils.js');
+  return cachedRenderingUtils;
+}
+
+async function getDownloadUtils() {
+  if (!cachedDownloadUtils) cachedDownloadUtils = await import('./utils/downloadUtils.js');
+  return cachedDownloadUtils;
+}
 
 const Redactor = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -119,28 +136,39 @@ const Redactor = () => {
     localStorage.setItem('redactor-theme', next);
   };
 
-  const onInitPdf = (bytes: Uint8Array) => initPdf(
-    bytes, setPdfDoc, setPdfjsDoc, setPdfBytes, setCurrentPageNum, 
-    setShowInfo, setLoadedPdfjsLib, setLoadedPdfLib
-  );
+  const onInitPdf = async (bytes: Uint8Array) => {
+    await initPdf(
+      bytes, setPdfDoc, setPdfjsDoc, setPdfBytes, setCurrentPageNum, 
+      setShowInfo, setLoadedPdfjsLib, setLoadedPdfLib
+    );
+    // Pre-cache other modules once a PDF is loaded to make interactions snappy
+    getRedactionUtils();
+    getRenderingUtils();
+    getDownloadUtils();
+    import('./utils/geometryUtils.js');
+  };
 
   const onFileChange = (e: any) => handleFileChange(e, setFilename, onInitPdf);
 
-  const onDownload = () => downloadRedactedPdf(
-    pdfBytes, pdfjsDoc, rasterizeOutput, loadedPdfjsLib, loadedPdfLib, downloadScale, filename
-  );
+  const onDownload = async () => {
+    const utils = await getDownloadUtils();
+    utils.downloadRedactedPdf(
+      pdfBytes, pdfjsDoc, rasterizeOutput, loadedPdfjsLib, loadedPdfLib, downloadScale, filename
+    );
+  };
 
   const onApplyRedactions = async (preview: boolean = false) => {
+    const utils = await getRedactionUtils();
     if (preview) {
         if (pdfBytes) setPrePreviewBytes(pdfBytes);
-        await applyRedactions(
+        await utils.applyRedactions(
             pdfDoc, loadedPdfLib, loadedPdfjsLib, pdfjsDoc, pendingRedactions, setIsRendering,
             setPdfBytes, setPdfjsDoc, setPdfDoc, setPendingRedactions, setActionHistory,
             true
         );
         setPreviewMode(true);
     } else {
-        await applyRedactions(
+        await utils.applyRedactions(
             pdfDoc, loadedPdfLib, loadedPdfjsLib, pdfjsDoc, pendingRedactions, setIsRendering,
             setPdfBytes, setPdfjsDoc, setPdfDoc, setPendingRedactions, setActionHistory,
             false
@@ -158,20 +186,27 @@ const Redactor = () => {
     setPrePreviewBytes(null);
   };
 
-  const onAutoRedact = (text: string) => autoRedactText(
-    text, pdfjsDoc, pdfDoc, loadedPdfjsLib, loadedPdfLib, pendingRedactions,
-    actionHistory, setIsRendering, setPendingRedactions, setActionHistory
-  );
+  const onAutoRedact = async (text: string) => {
+    const utils = await getRedactionUtils();
+    utils.autoRedactText(
+      text, pdfjsDoc, pdfDoc, loadedPdfjsLib, loadedPdfLib, pendingRedactions,
+      actionHistory, setIsRendering, setPendingRedactions, setActionHistory
+    );
+  };
 
   useEffect(() => {
     if (pdfjsDoc && pdfDoc && !renderTaskRef.current && !showInfo) {
-      renderPdfToBuffer(currentPageNum, pdfjsDoc, renderScale, renderTaskRef, setIsRendering, pdfBufferRef, () => renderOverlays(canvasRef.current, pdfBufferRef.current, pdfjsDoc, currentPageNum, renderScale, pendingRedactions, currentRect, interactionMode, hoverPos, isDrawing, theme));
+      getRenderingUtils().then(utils => {
+        utils.renderPdfToBuffer(currentPageNum, pdfjsDoc, renderScale, renderTaskRef, setIsRendering, pdfBufferRef, () => utils.renderOverlays(canvasRef.current, pdfBufferRef.current, pdfjsDoc, currentPageNum, renderScale, pendingRedactions, currentRect, interactionMode, hoverPos, isDrawing, theme));
+      });
     }
   }, [currentPageNum, pdfjsDoc, pdfDoc, renderScale, showInfo]);
 
   useEffect(() => {
     if (pdfjsDoc && pdfDoc && !showInfo) {
-      renderOverlays(canvasRef.current, pdfBufferRef.current, pdfjsDoc, currentPageNum, renderScale, pendingRedactions, currentRect, interactionMode, hoverPos, isDrawing, theme);
+      getRenderingUtils().then(utils => {
+        utils.renderOverlays(canvasRef.current, pdfBufferRef.current, pdfjsDoc, currentPageNum, renderScale, pendingRedactions, currentRect, interactionMode, hoverPos, isDrawing, theme);
+      });
     }
   }, [pendingRedactions, interactionMode, hoverPos, isDrawing, currentRect]);
 

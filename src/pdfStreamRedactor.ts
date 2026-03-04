@@ -1,4 +1,3 @@
-import pako from "pako";
 import { PDFStreamParser, type PdfOperation } from './pdfStreamParser.js';
 import type { PDFLibModule } from './redactor.js';
 import type { PDFDocument, PDFArray, PDFDict, PDFRef, PDFRawStream, PDFNumber } from "pdf-lib";
@@ -10,6 +9,11 @@ import { getFontMetrics } from './pdfFontHandler.js';
 import type { CustomFontMetrics } from "./pdfFontHandler.js";
 
 export const redactionDebugLog: RedactionLogEntry[] = [];
+
+let pakoLib: any = null;
+async function loadPako() {
+  if (!pakoLib) pakoLib = (await import('pako')).default;
+}
 
 export const redactContentStream = async (
   PDFLib: PDFLibModule,
@@ -28,7 +32,10 @@ export const redactContentStream = async (
   const filter = stream.dict.lookup(PDFLib.PDFName.of('Filter'));
   const isFlate = filter === PDFLib.PDFName.of('FlateDecode') || (filter instanceof PDFLib.PDFArray && filter.asArray().some(f => f === PDFLib.PDFName.of('FlateDecode')));
   if (isFlate) {
-    try { bytes = pako.inflate(bytes); } catch { return; }
+    try { 
+      await loadPako();
+      bytes = pakoLib.inflate(bytes); 
+    } catch { return; }
   }
 
   const resources = stream.dict.lookupMaybe(PDFLib.PDFName.of('Resources'), PDFLib.PDFDict) ?? resourcesDict;
@@ -268,10 +275,9 @@ export const redactContentStream = async (
     }
   }
 
-  console.log(redactionDebugLog);
-
   const result = concatUint8Arrays(output);
-  const compressed = pako.deflate(result);
+  await loadPako();
+  const compressed = pakoLib.deflate(result);
   (stream as any).contents = compressed;
   stream.dict.set(PDFLib.PDFName.of('Filter'), PDFLib.PDFName.of('FlateDecode'));
   stream.dict.set(PDFLib.PDFName.of('Length'), PDFLib.PDFNumber.of(compressed.length));

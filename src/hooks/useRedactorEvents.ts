@@ -1,9 +1,8 @@
-import { useState, useRef } from 'preact/hooks';
+import { useState } from 'preact/hooks';
 import { type TargetedMouseEvent } from 'preact';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { PDFDocument } from 'pdf-lib';
-import { type Rect, canvasRectToPdf } from '../utils/geometryUtils.js';
-import { renderOverlays } from '../utils/renderingUtils.js';
+import { type Rect } from '../utils/geometryUtils.js';
 import { type PdfRect } from '../types/pdf.js';
 
 interface UseRedactorEventsProps {
@@ -24,6 +23,19 @@ interface UseRedactorEventsProps {
   pdfBufferRef: { current: HTMLCanvasElement | null };
   renderTaskRef: { current: boolean };
   isRendering: boolean;
+}
+
+let cachedRenderingUtils: any = null;
+let cachedGeometryUtils: any = null;
+
+async function getRenderingUtils() {
+  if (!cachedRenderingUtils) cachedRenderingUtils = await import('../utils/renderingUtils.js');
+  return cachedRenderingUtils;
+}
+
+async function getGeometryUtils() {
+  if (!cachedGeometryUtils) cachedGeometryUtils = await import('../utils/geometryUtils.js');
+  return cachedGeometryUtils;
 }
 
 export const useRedactorEvents = ({
@@ -98,14 +110,18 @@ export const useRedactorEvents = ({
 
     if (!isDrawing) {
       if (interactionMode === 'redact') {
-        renderOverlays(canvas, pdfBufferRef.current, pdfjsDoc, currentPageNum, renderScale, pendingRedactions, currentRect, interactionMode, { x, y }, isDrawing, theme);
+        getRenderingUtils().then(utils => {
+          utils.renderOverlays(canvas, pdfBufferRef.current, pdfjsDoc, currentPageNum, renderScale, pendingRedactions, currentRect, interactionMode, { x, y }, isDrawing, theme);
+        });
       }
       return;
     }
 
     const newRect = { x: startPoint.x, y: startPoint.y, width: x - startPoint.x, height: y - startPoint.y };
     setCurrentRect(newRect);
-    renderOverlays(canvas, pdfBufferRef.current, pdfjsDoc, currentPageNum, renderScale, pendingRedactions, currentRect, interactionMode, { x, y }, isDrawing, theme, newRect);
+    getRenderingUtils().then(utils => {
+      utils.renderOverlays(canvas, pdfBufferRef.current, pdfjsDoc, currentPageNum, renderScale, pendingRedactions, currentRect, interactionMode, { x, y }, isDrawing, theme, newRect);
+    });
   };
 
   const stopDrawing = async () => {
@@ -122,9 +138,11 @@ export const useRedactorEvents = ({
     setIsDrawing(false);
     setCurrentRect(null);
 
+    const geoUtils = await getGeometryUtils();
+
     // Click-to-remove logic
     if (Math.abs(currentRect.width) < 5 && Math.abs(currentRect.height) < 5) {
-      const point = await canvasRectToPdf({ ...currentRect, width: 1, height: 1 }, pdfjsDoc, canvasRef.current, currentPageNum, renderScale);
+      const point = await geoUtils.canvasRectToPdf({ ...currentRect, width: 1, height: 1 }, pdfjsDoc, canvasRef.current, currentPageNum, renderScale);
       if (point) {
         setPendingRedactions(prev => {
           const next = new Map(prev);
@@ -156,9 +174,10 @@ export const useRedactorEvents = ({
       return;
     }
 
-    const pdfRect = await canvasRectToPdf(currentRect, pdfjsDoc, canvasRef.current, currentPageNum, renderScale);
+    const pdfRect = await geoUtils.canvasRectToPdf(currentRect, pdfjsDoc, canvasRef.current, currentPageNum, renderScale);
     if (!pdfRect || pdfRect.rW < 1 || pdfRect.rH < 1) {
-      renderOverlays(canvasRef.current, pdfBufferRef.current, pdfjsDoc, currentPageNum, renderScale, pendingRedactions, null, interactionMode, null, false, theme);
+      const rendUtils = await getRenderingUtils();
+      rendUtils.renderOverlays(canvasRef.current, pdfBufferRef.current, pdfjsDoc, currentPageNum, renderScale, pendingRedactions, null, interactionMode, null, false, theme);
       return;
     }
 

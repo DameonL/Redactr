@@ -1,5 +1,3 @@
-import { PDFName } from "pdf-lib";
-
 export const LATIN1 = new TextDecoder('latin1');
 
 export const encode = (s: string) => {
@@ -10,7 +8,7 @@ export const encode = (s: string) => {
 
 export const resolveName = (obj: any): string => {
   if (!obj) return "";
-  if (typeof obj.asString === 'function') return (obj as PDFName).asString().replace(/^\//, '');
+  if (typeof obj.asString === 'function') return obj.asString().replace(/^\//, '');
   return String(obj).replace(/^\//, '');
 };
 

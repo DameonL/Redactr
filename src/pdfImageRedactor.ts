@@ -1,9 +1,13 @@
-import pako from "pako";
 import type { PDFDocument, PDFArray, PDFRef, PDFRawStream } from "pdf-lib";
 import { type PDFLibModule } from './redactor.js';
 import type { PdfRect, Matrix } from './types/pdf.js';
 import { inverseTransform, unitSquareBounds, rectsOverlap } from './utils/pdfMath.js';
 import { resolveName } from './utils/pdfHelpers.js';
+
+let pakoLib: any = null;
+async function loadPako() {
+  if (!pakoLib) pakoLib = (await import('pako')).default;
+}
 
 export const blackOutImage = async (
   PDFLib: PDFLibModule, 
@@ -25,7 +29,7 @@ export const blackOutImage = async (
       ? filterObj.asArray().map(resolveName)
       : [resolveName(filterObj)];
       
-    const isCCITT = filters.some(f => f.includes('CCITT'));
+    const isCCITT = filters.some(f => f && f.includes('CCITT'));
     const isImageMask = stream.dict.lookup(PDFLib.PDFName.of('ImageMask')) === PDFLib.PDFBool.True;
     
     const csObj = stream.dict.lookup(PDFLib.PDFName.of('ColorSpace'));
@@ -42,7 +46,10 @@ export const blackOutImage = async (
 
     let bytes = stream.contents;
     if (filters.some(f => f === 'FlateDecode')) {
-      try { bytes = pako.inflate(bytes); } catch { return { surgical: false, info: "Inflation failed" }; }
+      try {
+        await loadPako();
+        bytes = pakoLib.inflate(bytes);
+      } catch { return { surgical: false, info: "Inflation failed" }; }
     }
 
     let loaded = false;
@@ -83,7 +90,7 @@ export const blackOutImage = async (
         }
 
         for (const id of candidateIds) {
-          const imgData: any = await new Promise((resolve, reject) => {
+          const imgData: any = await new Promise((resolve) => {
             const timeout = setTimeout(() => resolve(null), 5000);
             const cb = (d: any) => {
               clearTimeout(timeout);

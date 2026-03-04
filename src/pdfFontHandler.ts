@@ -1,7 +1,4 @@
-import pako from "pako";
-import * as fontkit from 'fontkit';
-import afm from "afm";
-import type { PDFDocument, PDFRef, PDFDict, PDFRawStream } from "pdf-lib";
+import type { PDFDocument, PDFRef, PDFRawStream } from "pdf-lib";
 import { type PDFLibModule } from './redactor.js';
 
 export interface CustomFontMetrics {
@@ -33,11 +30,24 @@ class AfmFontWrapper implements CustomFontMetrics {
 
 const fontCache = new Map<string, CustomFontMetrics | null>();
 
+// Lazy-loaded dependencies
+let pakoLib: any = null;
+let fontkitLib: any = null;
+let afmLib: any = null;
+
+async function loadDeps() {
+  if (!pakoLib) pakoLib = (await import('pako')).default;
+  if (!fontkitLib) fontkitLib = await import('fontkit');
+  if (!afmLib) afmLib = (await import('afm')).default;
+}
+
 export async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: PDFDocument, fontRef: PDFRef, fontName: string): Promise<CustomFontMetrics | null> {
   const refStr = fontRef.toString();
   if (fontCache.has(refStr)) return fontCache.get(refStr) || null;
 
-  const afmFontData = (afm.fonts as any)[fontName];
+  await loadDeps();
+
+  const afmFontData = (afmLib.fonts as any)[fontName];
   if (afmFontData) {
     const afmWrapper = new AfmFontWrapper(afmFontData);
     fontCache.set(refStr, afmWrapper);
@@ -63,14 +73,14 @@ export async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: PDFDocument, 
     let fontBytes: Uint8Array = fontStream.contents;
 
     if (fontStream.dict.has(PDFLib.PDFName.of('Filter')) && fontStream.dict.get(PDFLib.PDFName.of('Filter')) === PDFLib.PDFName.of('FlateDecode')) {
-      try { fontBytes = pako.inflate(fontBytes); } catch (e) {
+      try { fontBytes = pakoLib.inflate(fontBytes); } catch (e) {
         console.warn(`Could not inflate font stream for ${fontName}:`, e);
         fontCache.set(refStr, null);
         return null;
       }
     }
 
-    const fkFont = fontkit.create(fontBytes as any) as any;
+    const fkFont = fontkitLib.create(fontBytes as any) as any;
 
     const fontWrapper: CustomFontMetrics = {
       unitsPerEm: fkFont.unitsPerEm || 1000,
