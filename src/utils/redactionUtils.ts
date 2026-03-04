@@ -71,7 +71,6 @@ export const applyRedactions = async (
         targetRef = contentRefs[0]!;
       }
       
-      console.log("redacting");
       await redactContentStream(loadedPdfLib, pdfDoc, targetRef, rects, pageResources, [1, 0, 0, 1, 0, 0], pdfjsDoc, pageNum);
 
       for (const rect of rects) {
