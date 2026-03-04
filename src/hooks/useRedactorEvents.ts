@@ -23,6 +23,7 @@ interface UseRedactorEventsProps {
   canvasRef: { current: HTMLCanvasElement | null };
   pdfBufferRef: { current: HTMLCanvasElement | null };
   renderTaskRef: { current: boolean };
+  isRendering: boolean;
 }
 
 export const useRedactorEvents = ({
@@ -41,7 +42,8 @@ export const useRedactorEvents = ({
   setActionHistory,
   canvasRef,
   pdfBufferRef,
-  renderTaskRef
+  renderTaskRef,
+  isRendering
 }: UseRedactorEventsProps) => {
   const [isDrawing, setIsDrawing] = useState(false);
   const [startPoint, setStartPoint] = useState({ x: 0, y: 0 });
@@ -51,7 +53,7 @@ export const useRedactorEvents = ({
   const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null);
 
   const startDrawing = (e: TargetedMouseEvent<HTMLCanvasElement>) => {
-    if (!pdfjsDoc || renderTaskRef.current || showInfo) return;
+    if (!pdfjsDoc || renderTaskRef.current || showInfo || isRendering) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -70,7 +72,7 @@ export const useRedactorEvents = ({
   };
 
   const draw = (e: TargetedMouseEvent<HTMLCanvasElement>) => {
-    if (showInfo || !loadedPdfjsLib || !loadedPdfLib || !pdfjsDoc || !pdfDoc) return;
+    if (showInfo || !loadedPdfjsLib || !loadedPdfLib || !pdfjsDoc || !pdfDoc || isRendering) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -107,7 +109,7 @@ export const useRedactorEvents = ({
   };
 
   const stopDrawing = async () => {
-    if (showInfo || !loadedPdfjsLib || !loadedPdfLib || !pdfjsDoc || !canvasRef.current) return;
+    if (showInfo || !loadedPdfjsLib || !loadedPdfLib || !pdfjsDoc || !canvasRef.current || isRendering) return;
 
     if (interactionMode === 'pan') {
       setIsPanning(false);

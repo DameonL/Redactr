@@ -13,6 +13,7 @@ interface ToolbarProps {
   setCurrentPageNum: (updater: (p: number) => number) => void;
   toggleTheme: () => void;
   theme: 'light' | 'dark';
+  isRendering: boolean;
 }
 
 export const Toolbar = ({
@@ -25,7 +26,8 @@ export const Toolbar = ({
   currentPageNum,
   setCurrentPageNum,
   toggleTheme,
-  theme
+  theme,
+  isRendering
 }: ToolbarProps) => {
   if (!pdfjsDoc || showInfo) return null;
 
@@ -35,6 +37,7 @@ export const Toolbar = ({
         onClick={() => setRenderScale(s => Math.max(0.5, s - 0.25))}
         className={styles.iconButton}
         title="Zoom Out"
+        disabled={isRendering}
       >
         <Icons.ZoomOut />
       </button>
@@ -47,6 +50,7 @@ export const Toolbar = ({
         onClick={() => setRenderScale(s => Math.min(5, s + 0.25))}
         className={styles.iconButton}
         title="Zoom In"
+        disabled={isRendering}
       >
         <Icons.ZoomIn />
       </button>
@@ -58,6 +62,7 @@ export const Toolbar = ({
         className={styles.iconButton}
         style={interactionMode === 'pan' ? { background: 'var(--border-color)' } : {}}
         title={interactionMode === 'redact' ? "Switch to Pan Mode" : "Switch to Redact Mode"}
+        disabled={isRendering}
       >
         {interactionMode === 'redact' ? <Icons.Crosshair /> : <Icons.Hand />}
       </button>
@@ -66,7 +71,7 @@ export const Toolbar = ({
 
       <button
         onClick={() => setCurrentPageNum(p => Math.max(1, p - 1))}
-        disabled={currentPageNum <= 1}
+        disabled={isRendering || currentPageNum <= 1}
         className={styles.iconButton}
         title="Previous Page"
       >
@@ -79,7 +84,7 @@ export const Toolbar = ({
 
       <button
         onClick={() => setCurrentPageNum(p => Math.min(pdfjsDoc.numPages, p + 1))}
-        disabled={currentPageNum >= pdfjsDoc.numPages}
+        disabled={isRendering || currentPageNum >= pdfjsDoc.numPages}
         className={styles.iconButton}
         title="Next Page"
       >
@@ -92,6 +97,7 @@ export const Toolbar = ({
         onClick={toggleTheme}
         className={styles.iconButton}
         title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
+        disabled={isRendering}
       >
         {theme === 'dark' ? <Icons.Sun /> : <Icons.Moon />}
       </button>

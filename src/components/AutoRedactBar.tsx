@@ -33,6 +33,7 @@ export const AutoRedactBar = ({
         onInput={e => setSearchText((e.currentTarget as HTMLInputElement).value)}
         onKeyDown={e => e.key === 'Enter' && handleAutoRedact()}
         className={styles.searchInput}
+        disabled={isRendering}
       />
       
       <button

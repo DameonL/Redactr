@@ -62,7 +62,8 @@ const Redactor = () => {
   } = useRedactorEvents({
     pdfjsDoc, pdfDoc, currentPageNum, renderScale, interactionMode, setInteractionMode,
     theme, showInfo, loadedPdfjsLib, loadedPdfLib, pendingRedactions,
-    setPendingRedactions, setActionHistory, canvasRef, pdfBufferRef, renderTaskRef
+    setPendingRedactions, setActionHistory, canvasRef, pdfBufferRef, renderTaskRef,
+    isRendering
   });
 
   useEffect(() => {
@@ -202,14 +203,22 @@ const Redactor = () => {
             {(!pdfjsDoc || showInfo) ? (
               <InfoDialog pdfjsDoc={pdfjsDoc} setShowInfo={setShowInfo} />
             ) : (
-              <canvas
-                ref={canvasRef}
-                onMouseDown={startDrawing}
-                onMouseMove={draw}
-                onMouseUp={stopDrawing}
-                onMouseLeave={stopDrawing}
-                className={styles.canvasElement}
-              />
+              <div style={{ position: 'relative' }}>
+                {isRendering && (
+                  <div className={styles.loadingOverlay}>
+                    <div className={styles.spinner} />
+                    <div className={styles.loadingText}>Processing Redactions...</div>
+                  </div>
+                )}
+                <canvas
+                  ref={canvasRef}
+                  onMouseDown={startDrawing}
+                  onMouseMove={draw}
+                  onMouseUp={stopDrawing}
+                  onMouseLeave={stopDrawing}
+                  className={`${styles.canvasElement} ${isRendering ? styles.dimmed : ''}`}
+                />
+              </div>
             )}
           </div>
 
@@ -219,6 +228,7 @@ const Redactor = () => {
             interactionMode={interactionMode} setInteractionMode={setInteractionMode}
             currentPageNum={currentPageNum} setCurrentPageNum={setCurrentPageNum}
             toggleTheme={toggleTheme} theme={theme}
+            isRendering={isRendering}
           />
         </div>
       </div>

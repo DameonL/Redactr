@@ -64,6 +64,7 @@ export const Header = ({
         <div style={{ display: 'flex', gap: '8px' }}>
           <button
             onClick={() => setShowInfo(!showInfo)}
+            disabled={isRendering}
             className={styles.buttonBase}
             style={{ background: 'transparent', color: 'var(--text-color)', padding: '8px', border: '1px solid var(--border-color)' }}
             title="How it works"
@@ -73,6 +74,7 @@ export const Header = ({
 
           <button
             onClick={() => setShowShortcuts(!showShortcuts)}
+            disabled={isRendering}
             className={styles.buttonBase}
             style={{ background: 'transparent', color: 'var(--text-color)', padding: '8px', border: '1px solid var(--border-color)' }}
             title="Keyboard Shortcuts"
@@ -107,8 +109,13 @@ export const Header = ({
         <div className={styles.toolbarDivider} />
 
         {/* Global Settings */}
-        <label className={styles.checkboxLabel}>
-          <input type="checkbox" checked={rasterizeOutput} onChange={e => setRasterizeOutput((e.currentTarget as HTMLInputElement).checked)} />
+        <label className={styles.checkboxLabel} style={isRendering ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
+          <input 
+            type="checkbox" 
+            checked={rasterizeOutput} 
+            onChange={e => setRasterizeOutput((e.currentTarget as HTMLInputElement).checked)} 
+            disabled={isRendering}
+          />
           Rasterize
         </label>
 
@@ -117,6 +124,7 @@ export const Header = ({
             value={downloadScale}
             onChange={e => setDownloadScale(Number(e.currentTarget.value))}
             className={styles.selectInput}
+            disabled={isRendering}
           >
             <option value="1">1x</option>
             <option value="1.5">1.5x</option>
@@ -135,8 +143,13 @@ export const Header = ({
           onChange={handleFileChange}
           ref={fileInputRef}
           className={styles.hiddenInput}
+          disabled={isRendering}
         />
-        <label htmlFor="file-select" className={`${styles.buttonBase} ${styles.uploadButton}`}>
+        <label 
+          htmlFor="file-select" 
+          className={`${styles.buttonBase} ${styles.uploadButton}`}
+          style={isRendering ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}}
+        >
           Select File
         </label>
 
