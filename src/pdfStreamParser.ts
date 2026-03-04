@@ -9,12 +9,13 @@ function isWhitespace(cc: number) {
 }
 
 function isDelimiter(cc: number) {
-  // ( ) < > [ ] { } / %
-  return cc === 0x28 || cc === 0x29 || cc === 0x3C || cc === 0x3E || cc === 0x5B || cc === 0x5D || cc === 0x7B || cc === 0x7D || cc === 0x2F || cc === 0x25; 
+  // ( ) < > [ ] { } /
+  return cc === 0x28 || cc === 0x29 || cc === 0x3C || cc === 0x3E || cc === 0x5B || cc === 0x5D || cc === 0x7B || cc === 0x7D || cc === 0x2F; 
 }
 
 function isRegular(cc: number) {
-  return !isWhitespace(cc) && !isDelimiter(cc);
+  // Delimiters except '%' which starts a comment
+  return !isWhitespace(cc) && !isDelimiter(cc) && cc !== 0x25;
 }
 
 const DECODER = new TextDecoder('latin1');
@@ -30,10 +31,13 @@ export class PDFStreamParser {
   }
 
   nextOperation(): PdfOperation | null {
-    this.skipWhitespace();
-    if (this.pos >= this.bytes.length) return null;
-
     const startPos = this.pos;
+    this.skipWhitespace();
+    if (this.pos >= this.bytes.length) {
+       if (this.pos > startPos) return { op: 'EOF', args: [], rawOutput: this.bytes.slice(startPos, this.pos) };
+       return null;
+    }
+
     const args: any[] = [];
 
     while (this.pos < this.bytes.length) {
@@ -43,16 +47,25 @@ export class PDFStreamParser {
       const charCode = this.bytes[this.pos]!;
       const tokenStart = this.pos;
 
+      // 0. Comments
+      if (charCode === 0x25) { // '%'
+        while (this.pos < this.bytes.length && this.bytes[this.pos] !== 0x0A && this.bytes[this.pos] !== 0x0D) {
+          this.pos++;
+        }
+        return { op: 'COMMENT', args: [], rawOutput: this.bytes.slice(tokenStart, this.pos) };
+      }
+
       // 1. Arrays [ ... ]
       if (charCode === 0x5B) { // '['
         this.pos++;
         let open = 1;
         while (this.pos < this.bytes.length && open > 0) {
-            if (this.bytes[this.pos] === 0x28) { // '('
+            const cc = this.bytes[this.pos]!;
+            if (cc === 0x28) { // '(' Literal String
                let sOpen = 1;
                this.pos++;
                while(this.pos < this.bytes.length && sOpen > 0) {
-                  if (this.bytes[this.pos] === 0x5C) { // '\'
+                  if (this.bytes[this.pos] === 0x5C) {
                      this.pos += 2;
                      continue;
                   }
@@ -62,8 +75,8 @@ export class PDFStreamParser {
                }
                continue;
             }
-            if (this.bytes[this.pos] === 0x5B) open++;
-            if (this.bytes[this.pos] === 0x5D) open--;
+            if (cc === 0x5B) open++;
+            if (cc === 0x5D) open--;
             this.pos++;
         }
         const arrRaw = this.bytes.slice(tokenStart, this.pos);
@@ -74,10 +87,31 @@ export class PDFStreamParser {
       // 2. Dictionaries << ... >>
       if (charCode === 0x3C && this.bytes[this.pos+1] === 0x3C) { // '<<'
         this.pos += 2;
-        while(this.pos < this.bytes.length - 1 && !(this.bytes[this.pos] === 0x3E && this.bytes[this.pos+1] === 0x3E)) {
-           this.pos++;
+        let open = 1;
+        while(this.pos < this.bytes.length - 1 && open > 0) {
+           const cc = this.bytes[this.pos]!;
+           if (cc === 0x28) { // '('
+              let sOpen = 1; this.pos++;
+              while(this.pos < this.bytes.length && sOpen > 0) {
+                 if (this.bytes[this.pos] === 0x5C) { this.pos += 2; continue; }
+                 if (this.bytes[this.pos] === 0x28) sOpen++;
+                 if (this.bytes[this.pos] === 0x29) sOpen--;
+                 this.pos++;
+              }
+           } else if (cc === 0x3C) { // '<'
+              if (this.bytes[this.pos+1] === 0x3C) { // '<<'
+                 open++; this.pos += 2;
+              } else { // Hex String '<'
+                 this.pos++;
+                 while(this.pos < this.bytes.length && this.bytes[this.pos] !== 0x3E) this.pos++;
+                 if (this.pos < this.bytes.length) this.pos++;
+              }
+           } else if (cc === 0x3E && this.bytes[this.pos+1] === 0x3E) { // '>>'
+              open--; this.pos += 2;
+           } else {
+              this.pos++;
+           }
         }
-        this.pos += 2;
         const dictRaw = this.bytes.slice(tokenStart, this.pos);
         args.push({ type: 'dict', rawBytes: dictRaw });
         continue;
@@ -100,7 +134,7 @@ export class PDFStreamParser {
         let open = 1;
         this.pos++;
         while(this.pos < this.bytes.length && open > 0) {
-          if (this.bytes[this.pos] === 0x5C) { // '\'
+          if (this.bytes[this.pos] === 0x5C) {
              this.pos += 2;
              continue;
           }
@@ -126,21 +160,24 @@ export class PDFStreamParser {
       while(this.pos < this.bytes.length && isRegular(this.bytes[this.pos]!)) {
         this.pos++;
       }
+      
+      if (this.pos === tokenStart && this.pos < this.bytes.length) {
+        this.pos++;
+      }
+
       const tokenBytes = this.bytes.slice(tokenStart, this.pos);
       const tokenRaw = DECODER.decode(tokenBytes);
       
-      if (/^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(tokenRaw)) {
+      if (tokenRaw && /^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(tokenRaw)) {
         args.push(parseFloat(tokenRaw));
         continue;
       }
 
-      // Operator!
       const op = tokenRaw;
       
-      // Inline Image Trap Door
       if (op === 'BI') {
          while(this.pos < this.bytes.length - 2) {
-           if (this.bytes[this.pos] === 0x45 && this.bytes[this.pos+1] === 0x49 && isWhitespace(this.bytes[this.pos+2]!)) { // 'EI'
+           if (this.bytes[this.pos] === 0x45 && this.bytes[this.pos+1] === 0x49 && isWhitespace(this.bytes[this.pos+2]!)) {
               if (isWhitespace(this.bytes[this.pos-1]!)) {
                  this.pos += 2; 
                  break;

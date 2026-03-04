@@ -29,6 +29,11 @@ export const applyRedactions = async (
   setIsRendering(true);
   redactionDebugLog.length = 0;
 
+  // Let the UI show the spinner before starting heavy work
+  await new Promise(r => setTimeout(r, 100));
+
+  if (pdfjsDoc) (pdfjsDoc as any)._opListCache = new Map();
+
   try {
     const { PDFArray: PDFArrayCls, PDFName: PDFNameCls, PDFRef: PDFRefCls, rgb } = loadedPdfLib;
 
@@ -58,7 +63,7 @@ export const applyRedactions = async (
           if (stream) {
             let b = stream.contents;
             const f = stream.dict.lookup(PDFNameCls.of('Filter'));
-            const isF = f === PDFNameCls.of('FlateDecode') || (f instanceof PDFArrayCls && f.asArray().some((v: any) => v === PDFNameCls.of('FlateDecode')));
+            const isF = f === PDFNameCls.of('FlateDecode') || (f instanceof PDFArrayCls && f.asArray().some((v: any) => v && (typeof v.asString === 'function' ? v.asString() : String(v)).includes('Flate')));
             if (isF) { 
               try { 
                 await loadPako();
@@ -92,6 +97,9 @@ export const applyRedactions = async (
           opacity: preview ? 0.3 : 1,
         });
       }
+      
+      // Periodic yield between pages
+      await new Promise(r => setTimeout(r, 0));
     }
 
     if (!preview) {
@@ -105,25 +113,33 @@ export const applyRedactions = async (
     }
 
     const newBytes = await pdfDoc.save({ useObjectStreams: false });
-    const loadedPdfjsDoc = await loadedPdfjsLib.getDocument({ data: newBytes.slice(0) }).promise;
+    console.log(`[Redactr] Redaction step 1 complete. Bytes: ${newBytes.length}`);
+
+    // CRITICAL FIX: slice(0) to copy buffer for pdf.js to prevent detaching the original
+    const pdfjsBuffer = new Uint8Array(newBytes).slice(0);
+    const loadedPdfjsDoc = await loadedPdfjsLib.getDocument({ data: pdfjsBuffer }).promise;
     setPdfjsDoc(loadedPdfjsDoc);
     
     if (!preview) {
-        setPdfBytes(newBytes);
-        const loadedPdfDocToSet = await loadedPdfLib.PDFDocument.load(newBytes.slice(0));
+        // Use another copy or the original newBytes for pdf-lib reloading
+        const pdflibBuffer = new Uint8Array(newBytes).slice(0);
+        setPdfBytes(newBytes); // This might be used by download, so keep it safe
+        const loadedPdfDocToSet = await loadedPdfLib.PDFDocument.load(pdflibBuffer, { ignoreEncryption: true });
         setPdfDoc(loadedPdfDocToSet);
         setPendingRedactions(new Map());
         setActionHistory([]);
     } else {
-        const loadedPdfDocToSet = await loadedPdfLib.PDFDocument.load(newBytes.slice(0));
+        const pdflibBuffer = new Uint8Array(newBytes).slice(0);
+        const loadedPdfDocToSet = await loadedPdfLib.PDFDocument.load(pdflibBuffer, { ignoreEncryption: true });
         setPdfDoc(loadedPdfDocToSet); 
     }
 
   } catch (e) {
-    console.error("Redaction error:", e);
+    console.error("[Redactr] Redaction error:", e);
     alert("An error occurred during redaction. Please check the console for details.");
   } finally {
     setIsRendering(false);
+    if (pdfjsDoc) delete (pdfjsDoc as any)._opListCache;
   }
 };
 
@@ -188,6 +204,9 @@ export const autoRedactText = async (
       if (pageRedactions.length > 0) {
         newRedactionsMap.set(i, pageRedactions);
       }
+      
+      // Periodic yield
+      if (i % 5 === 0) await new Promise(r => setTimeout(r, 0));
     }
 
     if (foundCount > 0) {
@@ -198,7 +217,7 @@ export const autoRedactText = async (
       alert("No matches found.");
     }
   } catch (e) {
-    console.error("Auto-redact error:", e);
+    console.error("[Redactr] Auto-redact error:", e);
     alert("Error during auto-redact. See console for details.");
   } finally {
     setIsRendering(false);

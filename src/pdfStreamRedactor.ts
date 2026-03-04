@@ -23,8 +23,11 @@ export const redactContentStream = async (
   resourcesDict?: PDFDict,
   initialCtm: Matrix = [1, 0, 0, 1, 0, 0],
   pdfjsDoc?: any,
-  pageNum?: number
+  pageNum?: number,
+  depth: number = 0
 ): Promise<void> => {
+  if (depth > 25) return;
+
   const stream = pdfDoc.context.lookup(streamRef, PDFLib.PDFStream) as PDFRawStream;
   if (!stream) return;
 
@@ -53,10 +56,14 @@ export const redactContentStream = async (
 
   const parser = new PDFStreamParser(bytes);
   let opObj: PdfOperation | null;
+  let opCount = 0;
 
   while ((opObj = parser.nextOperation()) !== null) {
+    opCount++;
+    if (opCount % 1000 === 0) await new Promise(r => setTimeout(r, 0));
+
     try {
-      if (opObj.op === 'EOF' || opObj.op === 'INLINE_IMAGE') {
+      if (opObj.op === 'EOF' || opObj.op === 'INLINE_IMAGE' || opObj.op === 'COMMENT') {
         output.push(opObj.rawOutput);
         output.push(encode('\n'));
         continue;
@@ -147,7 +154,7 @@ export const redactContentStream = async (
             const formMat = xStream.dict.lookupMaybe(PDFLib.PDFName.of('Matrix'), PDFLib.PDFArray);
             let nextCtm = ctm;
             if (formMat) nextCtm = matMul((formMat as PDFArray).asArray().map((v: any) => (v as PDFNumber).asNumber()) as any, ctm);
-            await redactContentStream(PDFLib, pdfDoc, ref, pdfRects, resources, nextCtm, pdfjsDoc, pageNum);
+            await redactContentStream(PDFLib, pdfDoc, ref, pdfRects, resources, nextCtm, pdfjsDoc, pageNum, depth + 1);
             if (pdfRects.length > 0) {
               redactionDebugLog.push({ text: `Form: /${name}`, op: 'Do', curX: ctm[4], curY: ctm[5], rect: { ...pdfRects[0]! }, accepted: overlapsAny, reason: overlapsAny ? "Recursed" : "Skipped" });
             }
