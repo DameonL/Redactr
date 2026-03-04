@@ -1,5 +1,5 @@
 import type { PDFDocumentProxy } from 'pdfjs-dist';
-import type { PDFDocument, PDFRef } from 'pdf-lib';
+import type { PDFDocument, PDFRef, PDFDict } from 'pdf-lib';
 import { type PDFLibModule } from '../redactor.js';
 import { type PdfRect } from '../types/pdf.js';
 import { redactContentStream, redactionDebugLog } from '../pdfStreamRedactor.js';
@@ -10,6 +10,7 @@ export const applyRedactions = async (
   pdfDoc: PDFDocument | null,
   loadedPdfLib: PDFLibModule | null,
   loadedPdfjsLib: any | null,
+  pdfjsDoc: PDFDocumentProxy | null,
   pendingRedactions: Map<number, PdfRect[]>,
   setIsRendering: (v: boolean) => void,
   setPdfBytes: (v: Uint8Array) => void,
@@ -25,54 +26,53 @@ export const applyRedactions = async (
   redactionDebugLog.length = 0;
 
   try {
-    const { PDFArray: PDFArrayCls, PDFName: PDFNameCls, PDFDict: PDFDictCls, PDFRef: PDFRefCls, rgb } = loadedPdfLib;
-
-    // Clone the doc for preview to avoid destructive changes on the main state if cancelled (though we are reloading from bytes anyway on confirmation)
-    // Actually, we are modifying pdfDoc in place. If preview, we want to show the user the result but maybe not "save" it as the final state?
-    // The user flow is: Preview -> (Inspect) -> Confirm -> (Save Black).
-    // If we modify pdfDoc in place during preview, we need to reload it from original bytes if they cancel or if we want to re-apply black boxes cleanly.
-    // For now, let's assume pdfDoc is the working copy.
+    const { PDFArray: PDFArrayCls, PDFName: PDFNameCls, PDFRef: PDFRefCls, rgb } = loadedPdfLib;
 
     for (const [pageNum, rects] of pendingRedactions.entries()) {
       const pdfPage = pdfDoc.getPage(pageNum - 1);
-      // Use inherited Resources
-      const pageResources = (pdfPage.node as any).Resources();
+      const pageResources = (pdfPage.node as any).Resources() as PDFDict;
       
-      const contents = pdfPage.node.lookup(PDFNameCls.of('Contents'));
-      let contentStream: PDFRef;
+      const contents = pdfPage.node.get(PDFNameCls.of('Contents'));
+      const contentRefs: PDFRef[] = [];
 
-      if (contents instanceof PDFArrayCls) {
-        // Concatenate multiple content streams into one to maintain graphics state
-        const allBytes: Uint8Array[] = [];
+      if (contents instanceof PDFRefCls) {
+        contentRefs.push(contents);
+      } else if (contents instanceof PDFArrayCls) {
         for (let i = 0; i < contents.size(); i++) {
-           const ref = contents.get(i);
-           if (ref instanceof PDFRefCls) {
-             const stream = pdfDoc.context.lookup(ref, loadedPdfLib.PDFStream) as any;
-             if (stream) {
-               let b = stream.contents;
-               const f = stream.dict.lookup(PDFNameCls.of('Filter'));
-               const isF = f === PDFNameCls.of('FlateDecode') || (f instanceof PDFArrayCls && f.asArray().some((v: any) => v === PDFNameCls.of('FlateDecode')));
-               if (isF) { try { b = pako.inflate(b); } catch { } }
-               allBytes.push(b);
-               allBytes.push(new Uint8Array([10])); // newline
-             }
-           }
+          const r = contents.get(i);
+          if (r instanceof PDFRefCls) contentRefs.push(r);
         }
-        // Remove explicit pako.deflate here, let flateStream handle it
+      }
+
+      if (contentRefs.length === 0) continue;
+
+      let targetRef: PDFRef;
+      if (contentRefs.length > 1) {
+        const allBytes: Uint8Array[] = [];
+        for (const ref of contentRefs) {
+          const stream = pdfDoc.context.lookup(ref, loadedPdfLib.PDFStream) as any;
+          if (stream) {
+            let b = stream.contents;
+            const f = stream.dict.lookup(PDFNameCls.of('Filter'));
+            const isF = f === PDFNameCls.of('FlateDecode') || (f instanceof PDFArrayCls && f.asArray().some((v: any) => v === PDFNameCls.of('FlateDecode')));
+            if (isF) { try { b = pako.inflate(b); } catch { } }
+            allBytes.push(b);
+            allBytes.push(new Uint8Array([10]));
+          }
+        }
         const mergedBytes = concatUint8Arrays(allBytes);
-        contentStream = pdfDoc.context.register(
+        targetRef = pdfDoc.context.register(
           pdfDoc.context.flateStream(mergedBytes, {
             Resources: pageResources,
           })
         );
-        pdfPage.node.set(PDFNameCls.of('Contents'), contentStream);
-      } else if (contents instanceof PDFRefCls) {
-        contentStream = contents;
+        pdfPage.node.set(PDFNameCls.of('Contents'), targetRef);
       } else {
-        continue;
+        targetRef = contentRefs[0]!;
       }
-
-      await redactContentStream(loadedPdfLib, pdfDoc, contentStream, rects, pageResources);
+      
+      console.log("redacting");
+      await redactContentStream(loadedPdfLib, pdfDoc, targetRef, rects, pageResources, [1, 0, 0, 1, 0, 0], pdfjsDoc, pageNum);
 
       for (const rect of rects) {
         pdfPage.drawRectangle({
@@ -97,28 +97,8 @@ export const applyRedactions = async (
     }
 
     const newBytes = await pdfDoc.save({ useObjectStreams: false });
-    
-    // Update the view with the new PDF (preview or final)
     const loadedPdfjsDoc = await loadedPdfjsLib.getDocument({ data: newBytes.slice(0) }).promise;
     setPdfjsDoc(loadedPdfjsDoc);
-    
-    // For the internal PDFDoc state:
-    // If preview, we don't want to replace the "master" doc with the preview version if we want to apply black boxes later?
-    // Actually, if we apply black boxes, we want to start from the *text-scrubbed* version?
-    // Yes, if preview scrubbed the text, we can just paint over it. 
-    // BUT, the preview drew RED boxes. We can't easily "undraw" them.
-    // So for "Finalize", we should probably reload the *original* bytes (pre-preview) and apply black boxes + scrub again.
-    // OR, we reload the *scrubbed but not drawn* state? Too complex.
-    // SIMPLEST: Always reload from the *current saved state* (which should be the original unredacted PDF, unless we save intermediate steps).
-    // The calling component needs to manage "Original Unredacted Bytes" vs "Preview Bytes".
-    // I will return the new bytes so the component can decide what to do.
-    
-    // However, the signature requires setPdfBytes/setPdfDoc.
-    // I'll update them. If the user Cancels, they should ideally revert. 
-    // The component will handle the "Revert" logic by reloading the original file if needed, or I can add a "revert" function.
-    
-    // For now, let's just return the bytes and let the component handle state updates if desired?
-    // No, I'll update the state as requested.
     
     if (!preview) {
         setPdfBytes(newBytes);
@@ -127,36 +107,13 @@ export const applyRedactions = async (
         setPendingRedactions(new Map());
         setActionHistory([]);
     } else {
-        // In preview mode, we show the user the result, but we DON'T clear pending redactions.
-        // We DO update pdfjsDoc so they can see it.
-        // We DO NOT update pdfBytes (the "saved" file) or pdfDoc (the "master" edit copy) to the preview version?
-        // If we don't update pdfDoc, subsequent drawing operations will be on the OLD doc.
-        // If we DO update pdfDoc to the preview version (with red boxes), "Finalize" will add Black boxes ON TOP of Red boxes.
-        // That's acceptable for "Finalize". The red boxes are covered.
-        // But the transparency? 0.3 opacity red covered by 1.0 black is fine.
-        
-        // Wait, if I scrub text in preview, and update pdfDoc, then Finalize scrubs *already scrubbed* text.
-        // That's fine (idempotent-ish, or just finds nothing).
-        
-        // So: Update everything.
-        // "Cancel" needs to reload the original file. The user can just re-upload or I can store a backup.
-        // The current app doesn't seem to have "Undo Preview".
-        // I'll assume "Confirm" proceeds, and if they don't like it, they might have to undo/revert (which we support via Undo?).
-        
-        // Actually, Redactor.tsx has `pdfBytes`. I should probably *not* overwrite `pdfBytes` with the preview version if I want to "Save" the final version cleanly?
-        // Let's just update the view.
-        
-        // Wait, if I update `pdfDoc` to the preview version, then `pendingRedactions` are still there.
-        // If I click "Finalize", `applyRedactions` runs again.
-        // It scrubs text (again). It draws Black boxes (over the red ones).
-        // This works.
-        
         const loadedPdfDocToSet = await loadedPdfLib.PDFDocument.load(newBytes.slice(0));
         setPdfDoc(loadedPdfDocToSet); 
     }
 
   } catch (e) {
-    console.error(e);
+    console.error("Redaction error:", e);
+    alert("An error occurred during redaction. Please check the console for details.");
   } finally {
     setIsRendering(false);
   }

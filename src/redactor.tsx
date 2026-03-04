@@ -133,14 +133,14 @@ const Redactor = () => {
     if (preview) {
         if (pdfBytes) setPrePreviewBytes(pdfBytes);
         await applyRedactions(
-            pdfDoc, loadedPdfLib, loadedPdfjsLib, pendingRedactions, setIsRendering,
+            pdfDoc, loadedPdfLib, loadedPdfjsLib, pdfjsDoc, pendingRedactions, setIsRendering,
             setPdfBytes, setPdfjsDoc, setPdfDoc, setPendingRedactions, setActionHistory,
             true
         );
         setPreviewMode(true);
     } else {
         await applyRedactions(
-            pdfDoc, loadedPdfLib, loadedPdfjsLib, pendingRedactions, setIsRendering,
+            pdfDoc, loadedPdfLib, loadedPdfjsLib, pdfjsDoc, pendingRedactions, setIsRendering,
             setPdfBytes, setPdfjsDoc, setPdfDoc, setPendingRedactions, setActionHistory,
             false
         );
