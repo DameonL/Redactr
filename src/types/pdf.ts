@@ -17,3 +17,12 @@ export interface RedactionLogEntry {
 }
 
 export type Matrix = [number, number, number, number, number, number];
+
+export interface RedactionTemplate {
+  id: string;
+  name: string;
+  matchPattern: string;
+  isRegex: boolean;
+  applyToAllPages: boolean;
+  redactions: { [pageNum: string]: PdfRect[] };
+}

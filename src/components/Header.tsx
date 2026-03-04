@@ -9,6 +9,8 @@ interface HeaderProps {
   setShowInfo: (show: boolean) => void;
   showShortcuts: boolean;
   setShowShortcuts: (show: boolean) => void;
+  showTemplates: boolean;
+  setShowTemplates: (show: boolean) => void;
   rasterizeOutput: boolean;
   setRasterizeOutput: (rasterize: boolean) => void;
   downloadScale: number;
@@ -36,6 +38,8 @@ export const Header = ({
   setShowInfo,
   showShortcuts,
   setShowShortcuts,
+  showTemplates,
+  setShowTemplates,
   rasterizeOutput,
   setRasterizeOutput,
   downloadScale,
@@ -80,6 +84,16 @@ export const Header = ({
             title="Keyboard Shortcuts"
           >
             <Icons.Keyboard />
+          </button>
+
+          <button
+            onClick={() => setShowTemplates(!showTemplates)}
+            disabled={isRendering}
+            className={styles.buttonBase}
+            style={{ background: showTemplates ? 'rgba(59, 130, 246, 0.2)' : 'transparent', color: showTemplates ? '#3b82f6' : 'var(--text-color)', padding: '8px', border: '1px solid var(--border-color)' }}
+            title="Redaction Templates"
+          >
+            <Icons.Tag />
           </button>
         </div>
 

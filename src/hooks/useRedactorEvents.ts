@@ -23,6 +23,7 @@ interface UseRedactorEventsProps {
   pdfBufferRef: { current: HTMLCanvasElement | null };
   renderTaskRef: { current: boolean };
   isRendering: boolean;
+  viewport: any | null;
 }
 
 let cachedRenderingUtils: any = null;
@@ -55,7 +56,8 @@ export const useRedactorEvents = ({
   canvasRef,
   pdfBufferRef,
   renderTaskRef,
-  isRendering
+  isRendering,
+  viewport
 }: UseRedactorEventsProps) => {
   const [isDrawing, setIsDrawing] = useState(false);
   const [startPoint, setStartPoint] = useState({ x: 0, y: 0 });
@@ -111,7 +113,7 @@ export const useRedactorEvents = ({
     if (!isDrawing) {
       if (interactionMode === 'redact') {
         getRenderingUtils().then(utils => {
-          utils.renderOverlays(canvas, pdfBufferRef.current, pdfjsDoc, currentPageNum, renderScale, pendingRedactions, currentRect, interactionMode, { x, y }, isDrawing, theme);
+          utils.renderOverlays(canvas, pdfBufferRef.current, viewport, currentPageNum, pendingRedactions, currentRect, interactionMode, { x, y }, isDrawing, theme);
         });
       }
       return;
@@ -120,7 +122,7 @@ export const useRedactorEvents = ({
     const newRect = { x: startPoint.x, y: startPoint.y, width: x - startPoint.x, height: y - startPoint.y };
     setCurrentRect(newRect);
     getRenderingUtils().then(utils => {
-      utils.renderOverlays(canvas, pdfBufferRef.current, pdfjsDoc, currentPageNum, renderScale, pendingRedactions, currentRect, interactionMode, { x, y }, isDrawing, theme, newRect);
+      utils.renderOverlays(canvas, pdfBufferRef.current, viewport, currentPageNum, pendingRedactions, currentRect, interactionMode, { x, y }, isDrawing, theme, newRect);
     });
   };
 
@@ -177,7 +179,7 @@ export const useRedactorEvents = ({
     const pdfRect = await geoUtils.canvasRectToPdf(currentRect, pdfjsDoc, canvasRef.current, currentPageNum, renderScale);
     if (!pdfRect || pdfRect.rW < 1 || pdfRect.rH < 1) {
       const rendUtils = await getRenderingUtils();
-      rendUtils.renderOverlays(canvasRef.current, pdfBufferRef.current, pdfjsDoc, currentPageNum, renderScale, pendingRedactions, null, interactionMode, null, false, theme);
+      rendUtils.renderOverlays(canvasRef.current, pdfBufferRef.current, viewport, currentPageNum, pendingRedactions, null, interactionMode, null, false, theme);
       return;
     }
 

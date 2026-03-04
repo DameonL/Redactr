@@ -3,16 +3,17 @@ import type { PDFDocument } from 'pdf-lib';
 import { h } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import styles from "./assets/redactor.module.css";
-import { type PdfRect } from './types/pdf.js';
+import { type PdfRect, type RedactionTemplate } from './types/pdf.js';
 
-// Sub-components (UI is small, keep them static)
+// Sub-components
 import { Header } from './components/Header.js';
 import { Toolbar } from './components/Toolbar.js';
 import { InfoDialog } from './components/InfoDialog.js';
 import { ShortcutsDialog } from './components/ShortcutsDialog.js';
+import { TemplateManager } from './components/TemplateManager.js';
 
-// Utils - Keep light utils static
-import { initPdf, handleFileChange } from './utils/pdfInitUtils.js';
+// Utils
+import { initPdf } from './utils/pdfInitUtils.js';
 
 // Hooks
 import { useRedactorEvents } from './hooks/useRedactorEvents.js';
@@ -49,6 +50,7 @@ const Redactor = () => {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [showInfo, setShowInfo] = useState<boolean>(true);
   const [showShortcuts, setShowShortcuts] = useState<boolean>(false);
+  const [showTemplates, setShowTemplates] = useState<boolean>(false);
 
   const [filename, setFilename] = useState<string>("Redacted Document.pdf");
   const [pdfDoc, setPdfDoc] = useState<PDFDocument | null>(null);
@@ -69,6 +71,10 @@ const Redactor = () => {
   const [previewMode, setPreviewMode] = useState(false);
   const [prePreviewBytes, setPrePreviewBytes] = useState<Uint8Array | null>(null);
 
+  const [templates, setTemplates] = useState<RedactionTemplate[]>([]);
+  const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
+  const [currentViewport, setCurrentViewport] = useState<any>(null);
+
   const {
     isDrawing,
     currentRect,
@@ -80,14 +86,67 @@ const Redactor = () => {
     pdfjsDoc, pdfDoc, currentPageNum, renderScale, interactionMode, setInteractionMode,
     theme, showInfo, loadedPdfjsLib, loadedPdfLib, pendingRedactions,
     setPendingRedactions, setActionHistory, canvasRef, pdfBufferRef, renderTaskRef,
-    isRendering
+    isRendering, viewport: currentViewport
   });
 
   useEffect(() => {
     document.title = "Redactr";
-    const saved = localStorage.getItem('redactor-theme');
-    if (saved === 'light' || saved === 'dark') setTheme(saved);
+    const savedTheme = localStorage.getItem('redactor-theme');
+    if (savedTheme === 'light' || savedTheme === 'dark') setTheme(savedTheme);
+
+    const savedTemplates = localStorage.getItem('redaction-templates');
+    if (savedTemplates) {
+      try { setTemplates(JSON.parse(savedTemplates)); } catch (e) { console.error(e); }
+    }
+    const lastUsed = localStorage.getItem('last-used-template');
+    if (lastUsed) setActiveTemplateId(lastUsed);
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem('redaction-templates', JSON.stringify(templates));
+  }, [templates]);
+
+  useEffect(() => {
+    if (activeTemplateId) localStorage.setItem('last-used-template', activeTemplateId);
+    else localStorage.removeItem('last-used-template');
+  }, [activeTemplateId]);
+
+  const applyTemplate = (template: RedactionTemplate, numPages: number) => {
+    const newRedactions = new Map<number, PdfRect[]>();
+    const newHistory: { pageNum: number }[] = [];
+
+    if (template.applyToAllPages) {
+      const page1Redactions = template.redactions["1"] || Object.values(template.redactions)[0] || [];
+      for (let i = 1; i <= numPages; i++) {
+        newRedactions.set(i, [...page1Redactions]);
+        page1Redactions.forEach(() => newHistory.push({ pageNum: i }));
+      }
+    } else {
+      Object.entries(template.redactions).forEach(([pageNumStr, rects]) => {
+        const pageNum = parseInt(pageNumStr);
+        if (pageNum <= numPages) {
+          newRedactions.set(pageNum, [...rects]);
+          rects.forEach(() => newHistory.push({ pageNum: pageNum }));
+        }
+      });
+    }
+    setPendingRedactions(newRedactions);
+    setActionHistory(newHistory);
+  };
+
+  const findMatchingTemplate = (fname: string): RedactionTemplate | null => {
+    for (const t of templates) {
+      if (!t.matchPattern) continue;
+      try {
+        if (t.isRegex) {
+          if (new RegExp(t.matchPattern, 'i').test(fname)) return t;
+        } else if (fname.toLowerCase().includes(t.matchPattern.toLowerCase())) {
+          return t;
+        }
+      } catch (e) { console.error(e); }
+    }
+    return null;
+  };
 
   const undoLastRedaction = () => {
     if (actionHistory.length === 0) return;
@@ -136,19 +195,39 @@ const Redactor = () => {
     localStorage.setItem('redactor-theme', next);
   };
 
-  const onInitPdf = async (bytes: Uint8Array) => {
+  const onInitPdf = async (bytes: Uint8Array, fname: string) => {
     await initPdf(
-      bytes, setPdfDoc, setPdfjsDoc, setPdfBytes, setCurrentPageNum, 
+      bytes, setPdfDoc, (doc) => {
+        setPdfjsDoc(doc);
+        const matching = findMatchingTemplate(fname);
+        if (matching) {
+          setActiveTemplateId(matching.id);
+          applyTemplate(matching, doc.numPages);
+        } else if (activeTemplateId) {
+          const lastUsed = templates.find(t => t.id === activeTemplateId);
+          if (lastUsed) applyTemplate(lastUsed, doc.numPages);
+        }
+      }, setPdfBytes, setCurrentPageNum, 
       setShowInfo, setLoadedPdfjsLib, setLoadedPdfLib
     );
-    // Pre-cache other modules once a PDF is loaded to make interactions snappy
     getRedactionUtils();
     getRenderingUtils();
     getDownloadUtils();
     import('./utils/geometryUtils.js');
   };
 
-  const onFileChange = (e: any) => handleFileChange(e, setFilename, onInitPdf);
+  const onFileChange = (e: any) => {
+    const file = e.currentTarget?.files?.[0];
+    if (!file) return;
+    setFilename(file.name);
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const buf = event.target?.result;
+      if (!buf || typeof buf === "string") return;
+      await onInitPdf(new Uint8Array(buf), file.name);
+    };
+    reader.readAsArrayBuffer(file);
+  };
 
   const onDownload = async () => {
     const utils = await getDownloadUtils();
@@ -179,9 +258,7 @@ const Redactor = () => {
   };
 
   const onCancelPreview = () => {
-    if (prePreviewBytes) {
-        onInitPdf(prePreviewBytes);
-    }
+    if (prePreviewBytes) onInitPdf(prePreviewBytes, filename);
     setPreviewMode(false);
     setPrePreviewBytes(null);
   };
@@ -194,21 +271,72 @@ const Redactor = () => {
     );
   };
 
+  const onSaveTemplate = (name: string, pattern: string, isRegex: boolean, applyToAll: boolean) => {
+    const newT: RedactionTemplate = {
+      id: Math.random().toString(36).substring(2, 11),
+      name, matchPattern: pattern, isRegex, applyToAllPages: applyToAll,
+      redactions: Object.fromEntries(Array.from(pendingRedactions.entries()).map(([k, v]) => [k.toString(), v]))
+    };
+    setTemplates(prev => [...prev, newT]);
+    setActiveTemplateId(newT.id);
+  };
+
+  const onSelectTemplate = (id: string | null) => {
+    setActiveTemplateId(id);
+    if (id && pdfjsDoc) {
+      const t = templates.find(x => x.id === id);
+      if (t) applyTemplate(t, pdfjsDoc.numPages);
+    }
+  };
+
+  const onDeleteTemplate = (id: string) => {
+    setTemplates(prev => prev.filter(t => t.id !== id));
+    if (activeTemplateId === id) setActiveTemplateId(null);
+  };
+
+  const onExportTemplates = () => {
+    const blob = new Blob([JSON.stringify(templates, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'redactr-templates.json'; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const onImportTemplates = (e: any) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const imported = JSON.parse(event.target?.result as string);
+        if (Array.isArray(imported)) {
+          setTemplates(prev => {
+            const next = [...prev];
+            imported.forEach(t => { if (t.id && !next.some(x => x.id === t.id)) next.push(t); });
+            return next;
+          });
+        }
+      } catch (err) { alert("Invalid template file"); }
+    };
+    reader.readAsText(file);
+  };
+
   useEffect(() => {
     if (pdfjsDoc && pdfDoc && !renderTaskRef.current && !showInfo) {
       getRenderingUtils().then(utils => {
-        utils.renderPdfToBuffer(currentPageNum, pdfjsDoc, renderScale, renderTaskRef, setIsRendering, pdfBufferRef, () => utils.renderOverlays(canvasRef.current, pdfBufferRef.current, pdfjsDoc, currentPageNum, renderScale, pendingRedactions, currentRect, interactionMode, hoverPos, isDrawing, theme));
+        utils.renderPdfToBuffer(currentPageNum, pdfjsDoc, renderScale, renderTaskRef, setIsRendering, pdfBufferRef, (vp: any) => {
+          setCurrentViewport(vp);
+          utils.renderOverlays(canvasRef.current, pdfBufferRef.current, vp, currentPageNum, pendingRedactions, currentRect, interactionMode, hoverPos, isDrawing, theme);
+        });
       });
     }
   }, [currentPageNum, pdfjsDoc, pdfDoc, renderScale, showInfo]);
 
   useEffect(() => {
-    if (pdfjsDoc && pdfDoc && !showInfo) {
+    if (pdfjsDoc && pdfDoc && currentViewport && !showInfo) {
       getRenderingUtils().then(utils => {
-        utils.renderOverlays(canvasRef.current, pdfBufferRef.current, pdfjsDoc, currentPageNum, renderScale, pendingRedactions, currentRect, interactionMode, hoverPos, isDrawing, theme);
+        utils.renderOverlays(canvasRef.current, pdfBufferRef.current, currentViewport, currentPageNum, pendingRedactions, currentRect, interactionMode, hoverPos, isDrawing, theme);
       });
     }
-  }, [pendingRedactions, interactionMode, hoverPos, isDrawing, currentRect]);
+  }, [pendingRedactions, interactionMode, hoverPos, isDrawing, currentRect, currentViewport]);
 
   return (
     <div className={`${styles.themeWrapper} ${theme === 'dark' ? styles.dark : ''}`}>
@@ -216,6 +344,7 @@ const Redactor = () => {
         <Header 
           showInfo={showInfo} setShowInfo={setShowInfo}
           showShortcuts={showShortcuts} setShowShortcuts={setShowShortcuts}
+          showTemplates={showTemplates} setShowTemplates={setShowTemplates}
           rasterizeOutput={rasterizeOutput} setRasterizeOutput={setRasterizeOutput}
           downloadScale={downloadScale} setDownloadScale={setDownloadScale}
           handleFileChange={onFileChange} fileInputRef={fileInputRef}
@@ -232,6 +361,14 @@ const Redactor = () => {
         />
 
         {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}
+        {showTemplates && (
+          <TemplateManager 
+            templates={templates} activeTemplateId={activeTemplateId}
+            onSaveTemplate={onSaveTemplate} onSelectTemplate={onSelectTemplate}
+            onDeleteTemplate={onDeleteTemplate} onExportTemplates={onExportTemplates}
+            onImportTemplates={onImportTemplates} onClose={() => setShowTemplates(false)}
+          />
+        )}
 
         <div className={styles.viewerWrapper}>
           <div className={styles.canvasContainer}>
