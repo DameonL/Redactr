@@ -48,6 +48,9 @@ const Redactor = () => {
   const [actionHistory, setActionHistory] = useState<{ pageNum: number }[]>([]);
   const [interactionMode, setInteractionMode] = useState<'redact' | 'pan'>('redact');
   const prevInteractionModeRef = useRef<'redact' | 'pan' | null>(null);
+  
+  const [previewMode, setPreviewMode] = useState(false);
+  const [prePreviewBytes, setPrePreviewBytes] = useState<Uint8Array | null>(null);
 
   const {
     isDrawing,
@@ -126,10 +129,33 @@ const Redactor = () => {
     pdfBytes, pdfjsDoc, rasterizeOutput, loadedPdfjsLib, loadedPdfLib, downloadScale, filename
   );
 
-  const onApplyRedactions = () => applyRedactions(
-    pdfDoc, loadedPdfLib, loadedPdfjsLib, pendingRedactions, setIsRendering,
-    setPdfBytes, setPdfjsDoc, setPdfDoc, setPendingRedactions, setActionHistory
-  );
+  const onApplyRedactions = async (preview: boolean = false) => {
+    if (preview) {
+        if (pdfBytes) setPrePreviewBytes(pdfBytes);
+        await applyRedactions(
+            pdfDoc, loadedPdfLib, loadedPdfjsLib, pendingRedactions, setIsRendering,
+            setPdfBytes, setPdfjsDoc, setPdfDoc, setPendingRedactions, setActionHistory,
+            true
+        );
+        setPreviewMode(true);
+    } else {
+        await applyRedactions(
+            pdfDoc, loadedPdfLib, loadedPdfjsLib, pendingRedactions, setIsRendering,
+            setPdfBytes, setPdfjsDoc, setPdfDoc, setPendingRedactions, setActionHistory,
+            false
+        );
+        setPreviewMode(false);
+        setPrePreviewBytes(null);
+    }
+  };
+
+  const onCancelPreview = () => {
+    if (prePreviewBytes) {
+        onInitPdf(prePreviewBytes);
+    }
+    setPreviewMode(false);
+    setPrePreviewBytes(null);
+  };
 
   const onAutoRedact = (text: string) => autoRedactText(
     text, pdfjsDoc, pdfDoc, loadedPdfjsLib, loadedPdfLib, pendingRedactions,
@@ -165,6 +191,8 @@ const Redactor = () => {
           applyRedactions={onApplyRedactions}
           actionHistoryCount={actionHistory.length}
           onAutoRedact={onAutoRedact}
+          previewMode={previewMode}
+          onCancelPreview={onCancelPreview}
         />
 
         {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}

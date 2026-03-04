@@ -15,7 +15,7 @@ export const redactContentStream = async (
   PDFLib: PDFLibModule,
   pdfDoc: PDFDocument,
   streamRef: PDFRef,
-  pdfRect: PdfRect,
+  pdfRects: PdfRect[],
   resourcesDict?: PDFDict,
   initialCtm: Matrix = [...IDENTITY]
 ): Promise<void> => {
@@ -23,8 +23,9 @@ export const redactContentStream = async (
   if (!stream) return;
 
   let bytes = stream.contents;
-  const filter = stream.dict.get(PDFLib.PDFName.of('Filter'));
-  if (filter === PDFLib.PDFName.of('FlateDecode') || (filter instanceof PDFLib.PDFArray && (filter as PDFArray).asArray().some((f: any) => f === PDFLib.PDFName.of('FlateDecode')))) {
+  const filter = stream.dict.lookup(PDFLib.PDFName.of('Filter'));
+  const isFlate = filter === PDFLib.PDFName.of('FlateDecode') || (filter instanceof PDFLib.PDFArray && filter.asArray().some(f => f === PDFLib.PDFName.of('FlateDecode')));
+  if (isFlate) {
     try { bytes = pako.inflate(bytes); } catch { return; }
   }
 
@@ -126,19 +127,19 @@ export const redactContentStream = async (
 
       if (ref instanceof PDFLib.PDFRef) {
         const xStream = pdfDoc.context.lookup(ref, PDFLib.PDFStream) as PDFRawStream;
-        const subtype = resolveName(xStream?.dict.get(PDFLib.PDFName.of('Subtype')));
+        const subtype = resolveName(xStream?.dict.lookup(PDFLib.PDFName.of('Subtype')));
         const bounds = unitSquareBounds(ctm);
-        const overlaps = rectsOverlap(bounds, pdfRect);
+        const overlapsAny = pdfRects.some(r => rectsOverlap(bounds, r));
 
-        if (subtype === 'Image' && overlaps) {
-          const res = await blackOutImage(PDFLib, pdfDoc, ref, ctm, pdfRect);
-          redactionDebugLog.push({ text: `Image: /${name}`, op: 'Do', curX: ctm[4], curY: ctm[5], rect: { ...pdfRect }, accepted: true, reason: res.info });
+        if (subtype === 'Image' && overlapsAny) {
+          const res = await blackOutImage(PDFLib, pdfDoc, ref, ctm, pdfRects);
+          redactionDebugLog.push({ text: `Image: /${name}`, op: 'Do', curX: ctm[4], curY: ctm[5], rect: { ...pdfRects[0]! }, accepted: true, reason: res.info });
         } else if (subtype === 'Form') {
           const formMat = xStream.dict.lookupMaybe(PDFLib.PDFName.of('Matrix'), PDFLib.PDFArray);
           let nextCtm = ctm;
           if (formMat) nextCtm = matMul((formMat as PDFArray).asArray().map((v: any) => (v as PDFNumber).asNumber()) as any, ctm);
-          await redactContentStream(PDFLib, pdfDoc, ref, pdfRect, resources, nextCtm);
-          redactionDebugLog.push({ text: `Form: /${name}`, op: 'Do', curX: ctm[4], curY: ctm[5], rect: { ...pdfRect }, accepted: overlaps, reason: overlaps ? "Recursed" : "Skipped" });
+          await redactContentStream(PDFLib, pdfDoc, ref, pdfRects, resources, nextCtm);
+          redactionDebugLog.push({ text: `Form: /${name}`, op: 'Do', curX: ctm[4], curY: ctm[5], rect: { ...pdfRects[0]! }, accepted: overlapsAny, reason: overlapsAny ? "Recursed" : "Skipped" });
         }
       }
       output.push(opObj.rawOutput);
@@ -184,10 +185,6 @@ export const redactContentStream = async (
             } catch { }
           }
 
-          if (isNaN(advanceWidth) || !isFinite(advanceWidth)) {
-            advanceWidth = fontSize * 0.6;
-          }
-
           const trm = matMul(localTm, ctm);
           const curX = trm[4], curY = trm[5];
 
@@ -203,7 +200,7 @@ export const redactContentStream = async (
             yMax: curY + actualFontSize * 0.9
           };
 
-          const inBox = rectsOverlap(bbox, pdfRect);
+          const inBox = pdfRects.some(r => rectsOverlap(bbox, r));
 
           if (inBox) {
             flushText();
@@ -272,7 +269,7 @@ export const redactContentStream = async (
         op,
         curX: tm[4],
         curY: tm[5],
-        rect: { ...pdfRect },
+        rect: { ...pdfRects[0]! },
         accepted: wasRedacted,
         reason: wasRedacted ? `Redacted characters` : `Skipped`
       });

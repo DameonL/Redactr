@@ -23,10 +23,12 @@ interface HeaderProps {
   pendingRedactionsCount: number;
   undoLastRedaction: () => void;
   resetRedactions: () => void;
-  applyRedactions: () => void;
+  applyRedactions: (preview?: boolean) => void;
   actionHistoryCount: number;
   // Auto Redact Props
   onAutoRedact: (text: string) => void;
+  previewMode: boolean;
+  onCancelPreview: () => void;
 }
 
 export const Header = ({
@@ -49,7 +51,9 @@ export const Header = ({
   resetRedactions,
   applyRedactions,
   actionHistoryCount,
-  onAutoRedact
+  onAutoRedact,
+  previewMode,
+  onCancelPreview
 }: HeaderProps) => {
   return (
     <div className={styles.header}>
@@ -80,7 +84,7 @@ export const Header = ({
         <div className={styles.toolbarDivider} />
 
         {/* Search / Auto-Redact (Only if doc loaded) */}
-        {pdfjsDoc && !showInfo && (
+        {pdfjsDoc && !showInfo && !previewMode && (
           <AutoRedactBar 
             pdfjsDoc={pdfjsDoc}
             onAutoRedact={onAutoRedact}
@@ -96,6 +100,8 @@ export const Header = ({
           applyRedactions={applyRedactions}
           isRendering={isRendering}
           actionHistoryCount={actionHistoryCount}
+          previewMode={previewMode}
+          onCancelPreview={onCancelPreview}
         />
 
         <div className={styles.toolbarDivider} />

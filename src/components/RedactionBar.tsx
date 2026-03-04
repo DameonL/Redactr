@@ -6,9 +6,11 @@ interface RedactionBarProps {
   pendingRedactionsCount: number;
   undoLastRedaction: () => void;
   resetRedactions: () => void;
-  applyRedactions: () => void;
+  applyRedactions: (preview?: boolean) => void;
   isRendering: boolean;
   actionHistoryCount: number;
+  previewMode: boolean;
+  onCancelPreview: () => void;
 }
 
 export const RedactionBar = ({
@@ -17,9 +19,38 @@ export const RedactionBar = ({
   resetRedactions,
   applyRedactions,
   isRendering,
-  actionHistoryCount
+  actionHistoryCount,
+  previewMode,
+  onCancelPreview
 }: RedactionBarProps) => {
-  if (pendingRedactionsCount === 0) return null;
+  if (pendingRedactionsCount === 0 && !previewMode) return null;
+
+  if (previewMode) {
+    return (
+      <div className={styles.redactionBar}>
+        <span style={{ fontSize: '0.9rem', color: '#fbbf24', fontWeight: 600, marginRight: '8px' }}>
+          Preview Mode
+        </span>
+        <button
+          onClick={onCancelPreview}
+          disabled={isRendering}
+          className={styles.buttonBase}
+          style={{ background: 'transparent', color: '#ef4444', border: '1px solid #ef4444', borderRadius: '20px', gap: '6px' }}
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() => applyRedactions(false)}
+          disabled={isRendering}
+          className={styles.buttonBase}
+          style={{ background: '#10b981', color: 'white', borderRadius: '20px', gap: '6px' }}
+        >
+          <Icons.Check />
+          Confirm Redaction
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className={styles.redactionBar}>
@@ -48,13 +79,13 @@ export const RedactionBar = ({
       <div className={styles.toolbarDivider} />
 
       <button
-        onClick={applyRedactions}
+        onClick={() => applyRedactions(true)}
         disabled={isRendering}
         className={styles.buttonBase}
-        style={{ background: '#10b981', color: 'white', borderRadius: '20px', gap: '6px' }}
+        style={{ background: '#3b82f6', color: 'white', borderRadius: '20px', gap: '6px' }}
       >
         <Icons.Check />
-        Apply Redactions
+        Preview Redactions
       </button>
     </div>
   );
