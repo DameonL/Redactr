@@ -4,7 +4,7 @@ import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { PDFDocument } from 'pdf-lib';
 import { type Rect, canvasRectToPdf } from '../utils/geometryUtils.js';
 import { renderOverlays } from '../utils/renderingUtils.js';
-import { type PdfRect } from '../textRedaction.js';
+import { type PdfRect } from '../types/pdf.js';
 
 interface UseRedactorEventsProps {
   pdfjsDoc: PDFDocumentProxy | null;

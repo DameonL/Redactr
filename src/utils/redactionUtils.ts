@@ -1,7 +1,8 @@
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { PDFDocument, PDFRef } from 'pdf-lib';
 import { type PDFLibModule } from '../redactor.js';
-import { redactContentStream, redactionDebugLog, type PdfRect } from '../textRedaction.js';
+import { type PdfRect } from '../types/pdf.js';
+import { redactContentStream, redactionDebugLog } from '../pdfStreamRedactor.js';
 
 export const applyRedactions = async (
   pdfDoc: PDFDocument | null,

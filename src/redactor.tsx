@@ -3,7 +3,7 @@ import type { PDFDocument } from 'pdf-lib';
 import { h } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import styles from "./assets/redactor.module.css";
-import { type PdfRect } from './textRedaction.js';
+import { type PdfRect } from './types/pdf.js';
 
 // Sub-components
 import { Header } from './components/Header.js';

@@ -1,5 +1,5 @@
 import type { PDFDocumentProxy } from 'pdfjs-dist';
-import { type PdfRect } from '../textRedaction.js';
+import { type PdfRect } from '../types/pdf.js';
 import { type Rect } from './geometryUtils.js';
 
 export const renderPdfToBuffer = async (
