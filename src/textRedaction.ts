@@ -50,7 +50,7 @@ const inverseTransform = (m: Matrix, x: number, y: number) => {
   const dx = x - m[4];
   const dy = y - m[5];
   return {
-    x: (dx * m[3] - dy * m[1]) / det,
+    x: (dx * m[3] - dy * m[2]) / det,
     y: (dy * m[0] - dx * m[1]) / det
   };
 };
