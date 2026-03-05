@@ -46,11 +46,26 @@ export const redactContentStream = async (
   const fontsDict = resources?.lookupMaybe(PDFLib.PDFName.of('Font'), PDFLib.PDFDict);
 
   const output: Uint8Array[] = [];
-  let gStack: Array<{ ctm: Matrix; tr: number }> = [];
+  let gStack: Array<{ 
+    ctm: Matrix; 
+    tr: number; 
+    charSpacing: number; 
+    wordSpacing: number; 
+    horizontalScaling: number; 
+    fontSize: number; 
+    leading: number;
+    textRise: number;
+    currentFont: CustomFontMetrics | null 
+  }> = [];
   let ctm: Matrix = [...initialCtm];
   let tm: Matrix = [1, 0, 0, 1, 0, 0];
   let tlm: Matrix = [1, 0, 0, 1, 0, 0];
   let fontSize = 10;
+  let charSpacing = 0;
+  let wordSpacing = 0;
+  let horizontalScaling = 100;
+  let leading = 0;
+  let textRise = 0;
   let currentTr = 0;
   let currentFont: CustomFontMetrics | null = null;
 
@@ -73,14 +88,21 @@ export const redactContentStream = async (
       const numArgs = opObj.args.filter((a): a is number => typeof a === 'number');
 
       if (op === 'q') {
-        gStack.push({ ctm: [...ctm], tr: currentTr });
+        gStack.push({ 
+          ctm: [...ctm], tr: currentTr, charSpacing, wordSpacing, horizontalScaling,
+          fontSize, leading, textRise, currentFont
+        });
         output.push(opObj.rawOutput);
         output.push(encode('\n'));
       }
       else if (op === 'Q') {
-        const s = gStack.pop() || { ctm: [...initialCtm], tr: 0 };
-        ctm = s.ctm;
-        currentTr = s.tr;
+        const s = gStack.pop() || { 
+          ctm: [...initialCtm], tr: 0, charSpacing: 0, wordSpacing: 0, horizontalScaling: 100,
+          fontSize: 10, leading: 0, textRise: 0, currentFont: null
+        };
+        ctm = s.ctm; currentTr = s.tr; charSpacing = s.charSpacing; wordSpacing = s.wordSpacing;
+        horizontalScaling = s.horizontalScaling; fontSize = s.fontSize; leading = s.leading;
+        textRise = s.textRise; currentFont = s.currentFont;
         output.push(opObj.rawOutput);
         output.push(encode('\n'));
       }
@@ -106,6 +128,31 @@ export const redactContentStream = async (
         output.push(opObj.rawOutput);
         output.push(encode('\n'));
       }
+      else if (op === 'Tc' && numArgs.length >= 1) {
+        charSpacing = numArgs[numArgs.length - 1]!;
+        output.push(opObj.rawOutput);
+        output.push(encode('\n'));
+      }
+      else if (op === 'Tw' && numArgs.length >= 1) {
+        wordSpacing = numArgs[numArgs.length - 1]!;
+        output.push(opObj.rawOutput);
+        output.push(encode('\n'));
+      }
+      else if (op === 'Tz' && numArgs.length >= 1) {
+        horizontalScaling = numArgs[numArgs.length - 1]!;
+        output.push(opObj.rawOutput);
+        output.push(encode('\n'));
+      }
+      else if (op === 'TL' && numArgs.length >= 1) {
+        leading = numArgs[numArgs.length - 1]!;
+        output.push(opObj.rawOutput);
+        output.push(encode('\n'));
+      }
+      else if (op === 'Ts' && numArgs.length >= 1) {
+        textRise = numArgs[numArgs.length - 1]!;
+        output.push(opObj.rawOutput);
+        output.push(encode('\n'));
+      }
       else if ((op === 'Td' || op === 'TD') && numArgs.length >= 2) {
         const a = numArgs.slice(-2);
         tlm = matMul([1, 0, 0, 1, a[0] as number, a[1] as number], tlm);
@@ -113,10 +160,10 @@ export const redactContentStream = async (
         output.push(opObj.rawOutput);
         output.push(encode('\n'));
       }
-      else if (op === 'T*') {
-        tlm = matMul([1, 0, 0, 1, 0, -fontSize], tlm);
+      else if (op === 'T*' || op === "'") {
+        tlm = matMul([1, 0, 0, 1, 0, -leading], tlm);
         tm = [...tlm];
-        output.push(opObj.rawOutput);
+        output.push(op === "'" ? opObj.rawOutput : encode("T*\n"));
         output.push(encode('\n'));
       }
       else if (op === 'Tf') {
@@ -126,10 +173,8 @@ export const redactContentStream = async (
         currentFont = null;
         if (fontsDict && nameArg) {
           const fontName = nameArg.value.substring(1);
-          const fontRef = fontsDict.get(PDFLib.PDFName.of(fontName));
-          if (fontRef instanceof PDFLib.PDFRef) {
-            currentFont = await getFontMetrics(PDFLib, pdfDoc, fontRef, fontName);
-          }
+          const fontObj = fontsDict.get(PDFLib.PDFName.of(fontName));
+          if (fontObj) currentFont = await getFontMetrics(PDFLib, pdfDoc, fontObj as any, fontName);
         }
         output.push(opObj.rawOutput);
         output.push(encode('\n'));
@@ -138,26 +183,18 @@ export const redactContentStream = async (
         const nameArg = opObj.args.find(a => typeof a === 'object' && a.type === 'name');
         const name = nameArg ? nameArg.value.substring(1) : "";
         const ref = xObjects?.get(PDFLib.PDFName.of(name));
-
         if (ref instanceof PDFLib.PDFRef) {
           const xStream = pdfDoc.context.lookup(ref, PDFLib.PDFStream) as PDFRawStream;
           const subtype = resolveName(xStream?.dict.lookup(PDFLib.PDFName.of('Subtype')));
           const bounds = unitSquareBounds(ctm);
           const overlapsAny = pdfRects.some(r => rectsOverlap(bounds, r));
-
           if (subtype === 'Image' && overlapsAny) {
-            const res = await blackOutImage(PDFLib, pdfDoc, ref, ctm, pdfRects, pdfjsDoc, pageNum, name);
-            if (pdfRects.length > 0) {
-              redactionDebugLog.push({ text: `Image: /${name}`, op: 'Do', curX: ctm[4], curY: ctm[5], rect: { ...pdfRects[0]! }, accepted: true, reason: res.info });
-            }
+            await blackOutImage(PDFLib, pdfDoc, ref, ctm, pdfRects, pdfjsDoc, pageNum, name);
           } else if (subtype === 'Form') {
             const formMat = xStream.dict.lookupMaybe(PDFLib.PDFName.of('Matrix'), PDFLib.PDFArray);
             let nextCtm = ctm;
             if (formMat) nextCtm = matMul((formMat as PDFArray).asArray().map((v: any) => (v as PDFNumber).asNumber()) as any, ctm);
             await redactContentStream(PDFLib, pdfDoc, ref, pdfRects, resources, nextCtm, pdfjsDoc, pageNum, depth + 1);
-            if (pdfRects.length > 0) {
-              redactionDebugLog.push({ text: `Form: /${name}`, op: 'Do', curX: ctm[4], curY: ctm[5], rect: { ...pdfRects[0]! }, accepted: overlapsAny, reason: overlapsAny ? "Recursed" : "Skipped" });
-            }
           }
         }
         output.push(opObj.rawOutput);
@@ -169,6 +206,11 @@ export const redactContentStream = async (
         let pendingBytes: Uint8Array[] = [];
         let wasRedacted = false;
         let isCurrentHex = false;
+
+        if (op === '"' && numArgs.length >= 2) {
+          wordSpacing = numArgs[0]!;
+          charSpacing = numArgs[1]!;
+        }
 
         const flushText = () => {
           if (pendingBytes.length > 0) {
@@ -183,74 +225,54 @@ export const redactContentStream = async (
           const isHex = strBytes[0] === 0x3C;
           if (pendingBytes.length > 0 && isCurrentHex !== isHex) flushText();
           isCurrentHex = isHex;
-          const chars = parsePdfString(strBytes);
-          for (const char of chars) {
-            let advanceWidth = fontSize * 0.6;
-            let glyphBBox: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
-            if (currentFont) {
-              try {
-                const glyph = currentFont.getGlyph(char.value);
-                if (glyph && typeof glyph.advanceWidth === 'number' && !isNaN(glyph.advanceWidth)) {
-                  advanceWidth = (glyph.advanceWidth / (currentFont.unitsPerEm || 1000)) * fontSize;
-                  if (glyph.bbox) {
-                    glyphBBox = {
-                      minX: (glyph.bbox.minX / currentFont.unitsPerEm) * fontSize,
-                      minY: (glyph.bbox.minY / currentFont.unitsPerEm) * fontSize,
-                      maxX: (glyph.bbox.maxX / currentFont.unitsPerEm) * fontSize,
-                      maxY: (glyph.bbox.maxY / currentFont.unitsPerEm) * fontSize,
-                    };
-                  }
-                }
-              } catch { }
-            }
-            if (isNaN(advanceWidth) || !isFinite(advanceWidth)) advanceWidth = fontSize * 0.6;
+          const isMultiByte = currentFont?.isMultiByte || false;
+          const chars = parsePdfString(strBytes, isMultiByte);
 
-            const trm = matMul(localTm, ctm);
-            const scaleX = Math.sqrt(trm[0] * trm[0] + trm[1] * trm[1]);
-            const scaleY = Math.sqrt(trm[2] * trm[2] + trm[3] * trm[3]);
+          for (const char of chars) {
+            const th = horizontalScaling / 100;
+            const tw = (!isMultiByte && char.value === 32) ? wordSpacing : 0;
+            let w0 = 600;
+            let glyphBBox: { minX: number; minY: number; maxX: number; maxY: number } | undefined;
+            if (currentFont) {
+              const glyph = currentFont.getGlyph(char.value);
+              w0 = glyph.advanceWidth; glyphBBox = glyph.bbox;
+            }
+
+            // Displacement in points (user space)
+            const tx_points = ((w0 / 1000) * th + charSpacing + tw) * fontSize;
+
+            // Trm = [Tfs*Th 0 0 Tfs 0 Ts*Tfs] * Tm * CTM
+            // Left-multiplication by Scale ensures Tm's translation is NOT double-scaled.
+            const trm = matMul(
+              [fontSize * th, 0, 0, fontSize, 0, textRise * fontSize],
+              matMul(localTm, ctm)
+            );
 
             let bbox;
             if (glyphBBox) {
-              // Transform glyph points by the current matrix to get the page-space bounding box
-              // Simplified transform (assuming mostly non-rotated text)
-              const p1 = matMul([1, 0, 0, 1, glyphBBox.minX, glyphBBox.minY], trm);
-              const p2 = matMul([1, 0, 0, 1, glyphBBox.maxX, glyphBBox.maxY], trm);
-              bbox = {
-                xMin: Math.min(p1[4], p2[4]),
-                xMax: Math.max(p1[4], p2[4]),
-                yMin: Math.min(p1[5], p2[5]),
-                yMax: Math.max(p1[5], p2[5])
-              };
+              const p1 = matMul([1, 0, 0, 1, glyphBBox.minX / 1000, glyphBBox.minY / 1000], trm);
+              const p2 = matMul([1, 0, 0, 1, glyphBBox.maxX / 1000, glyphBBox.maxY / 1000], trm);
+              bbox = { xMin: Math.min(p1[4], p2[4]), xMax: Math.max(p1[4], p2[4]), yMin: Math.min(p1[5], p2[5]), yMax: Math.max(p1[5], p2[5]) };
             } else {
               const curX = trm[4], curY = trm[5];
-              const actualAdvance = advanceWidth * scaleX;
-              let ascent = 0.9 * fontSize;
-              let descent = -0.3 * fontSize;
-              if (currentFont) {
-                ascent = (currentFont.ascent / currentFont.unitsPerEm) * fontSize;
-                descent = (currentFont.descent / currentFont.unitsPerEm) * fontSize;
-              }
-              const scaledAscent = ascent * scaleY;
-              const scaledDescent = descent * scaleY;
-
-              bbox = {
-                xMin: Math.min(curX, curX + actualAdvance),
-                xMax: Math.max(curX, curX + actualAdvance),
-                yMin: curY + Math.min(scaledAscent, scaledDescent),
-                yMax: curY + Math.max(scaledAscent, scaledDescent)
-              };
+              const scaleX = Math.sqrt(trm[0] * trm[0] + trm[1] * trm[1]);
+              const scaleY = Math.sqrt(trm[2] * trm[2] + trm[3] * trm[3]);
+              const actualAdvance = (w0 / 1000) * scaleX;
+              const ascent = currentFont ? (currentFont.ascent / 1000) * scaleY : 0.9 * scaleY;
+              const descent = currentFont ? (currentFont.descent / 1000) * scaleY : -0.3 * scaleY;
+              bbox = { xMin: Math.min(curX, curX + actualAdvance), xMax: Math.max(curX, curX + actualAdvance), yMin: curY + Math.min(ascent, descent), yMax: curY + Math.max(ascent, descent) };
             }
 
-            const inBox = pdfRects.some(r => rectsOverlap(bbox, r));
-            if (inBox) {
+            if (pdfRects.some(r => rectsOverlap(bbox, r))) {
               flushText();
-              const kern = - (advanceWidth / fontSize) * 1000;
+              // kern = - (tx_points / (fontSize * th)) * 1000
+              const kern = - (tx_points / (fontSize * th)) * 1000;
               newTjItems.push(encode(kern.toFixed(3)));
               wasRedacted = true;
             } else {
               pendingBytes.push(strBytes.slice(char.start, char.start + char.len));
             }
-            localTm = matMul([1, 0, 0, 1, advanceWidth, 0], localTm);
+            localTm = matMul(localTm, [1, 0, 0, 1, tx_points, 0]);
           }
         };
 
@@ -262,10 +284,9 @@ export const redactContentStream = async (
             if (itemOp) {
               for (const arg of itemOp.args) {
                 if (typeof arg === 'number') {
-                  flushText();
-                  newTjItems.push(encode(arg.toString()));
-                  const advance = - (arg / 1000) * fontSize;
-                  localTm = matMul([1, 0, 0, 1, advance, 0], localTm);
+                  flushText(); newTjItems.push(encode(arg.toString()));
+                  const tx_tj = - (arg / 1000) * fontSize * (horizontalScaling / 100);
+                  localTm = matMul(localTm, [1, 0, 0, 1, tx_tj, 0]);
                 } else if (typeof arg === 'object' && (arg.type === 'string' || arg.type === 'hexstring')) {
                   processString(arg.rawBytes);
                 }
@@ -273,23 +294,16 @@ export const redactContentStream = async (
             }
           }
         } else {
-          if (op === "'" || op === '"') {
-            tlm = matMul([1, 0, 0, 1, 0, -fontSize], tlm);
-            tm = [...tlm];
-            localTm = [...tm];
-          }
           const strArg = opObj.args.find(a => typeof a === 'object' && (a.type === 'string' || a.type === 'hexstring'));
           if (strArg) processString(strArg.rawBytes);
         }
 
         flushText();
         if (wasRedacted) {
-          if (op === "'" || op === '"') output.push(encode("T*\n"));
           if (newTjItems.length > 0) {
             output.push(encode('['));
             for (let i = 0; i < newTjItems.length; i++) {
-              output.push(newTjItems[i]!);
-              if (i < newTjItems.length - 1) output.push(encode(' '));
+              output.push(newTjItems[i]!); if (i < newTjItems.length - 1) output.push(encode(' '));
             }
             output.push(encode('] TJ\n'));
           }
@@ -298,9 +312,9 @@ export const redactContentStream = async (
           output.push(encode('\n'));
         }
         tm = localTm;
-        const debugText = LATIN1.decode(opObj.rawOutput);
         if (pdfRects.length > 0) {
-          redactionDebugLog.push({ text: debugText.length > 20 ? debugText.slice(0, 20) + "..." : debugText, op, curX: tm[4], curY: tm[5], rect: { ...pdfRects[0]! }, accepted: wasRedacted, reason: wasRedacted ? `Redacted characters` : `Skipped` });
+          const debugText = LATIN1.decode(opObj.rawOutput);
+          redactionDebugLog.push({ text: debugText, op, curX: tm[4], curY: tm[5], rect: { ...pdfRects[0]! }, accepted: wasRedacted, reason: wasRedacted ? `Redacted` : `Skipped` });
         }
       } else {
         output.push(opObj.rawOutput);

@@ -2,13 +2,17 @@ import type { Matrix, PdfRect } from '../types/pdf.js';
 
 export const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
 
-export const matMul = (m: Matrix, c: Matrix): Matrix => [
-  m[0] * c[0] + m[1] * c[2],
-  m[0] * c[1] + m[1] * c[3],
-  m[2] * c[0] + m[3] * c[2],
-  m[2] * c[1] + m[3] * c[3],
-  m[4] * c[0] + m[5] * c[2] + c[4],
-  m[4] * c[1] + m[5] * c[3] + c[5],
+/**
+ * Standard affine matrix multiplication for [a b c d e f] format.
+ * This implementation represents RowVector * A * B
+ */
+export const matMul = (A: Matrix, B: Matrix): Matrix => [
+  A[0] * B[0] + A[1] * B[2],        // a
+  A[0] * B[1] + A[1] * B[3],        // b
+  A[2] * B[0] + A[3] * B[2],        // c
+  A[2] * B[1] + A[3] * B[3],        // d
+  A[4] * B[0] + A[5] * B[2] + B[4], // e
+  A[4] * B[1] + A[5] * B[3] + B[5], // f
 ];
 
 export const transform = (m: Matrix, x: number, y: number): { x: number, y: number } => ({

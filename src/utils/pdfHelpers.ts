@@ -12,19 +12,21 @@ export const resolveName = (obj: any): string => {
   return String(obj).replace(/^\//, '');
 };
 
-export function parsePdfString(bytes: Uint8Array) {
+export function parsePdfString(bytes: Uint8Array, isMultiByte: boolean = false) {
   const chars: Array<{ start: number; len: number; value: number }> = [];
   if (bytes[0] === 0x3C) { // '<'
     const s = LATIN1.decode(bytes);
     const hex = s.slice(1, -1).replace(/\s/g, '');
     let pos = 1;
-    for (let i = 0; i < hex.length; i += 2) {
-      while (pos < s.length && !/[0-9a-fA-F]/.test(s[pos]!)) pos++;
+    const step = isMultiByte ? 4 : 2;
+    for (let i = 0; i < hex.length; i += step) {
       const start = pos;
-      let valStr = s[pos] || ""; pos++;
-      while (pos < s.length && !/[0-9a-fA-F]/.test(s[pos]!)) pos++;
-      if (pos < s.length) { valStr += s[pos]; pos++; }
-      chars.push({ start, len: pos - start, value: parseInt(valStr.padEnd(2, '0'), 16) });
+      let valStr = "";
+      for (let j = 0; j < step && i + j < hex.length; j++) {
+        while (pos < s.length && !/[0-9a-fA-F]/.test(s[pos]!)) pos++;
+        if (pos < s.length) { valStr += s[pos]; pos++; }
+      }
+      chars.push({ start, len: pos - start, value: parseInt(valStr.padEnd(step, '0'), 16) });
     }
   } else {
     for (let i = 1; i < bytes.length - 1; i++) {
@@ -49,6 +51,17 @@ export function parsePdfString(bytes: Uint8Array) {
           else val = next;
         }
       }
+      
+      if (isMultiByte) {
+         // This part is for non-hex multi-byte strings.
+         // Usually multi-byte strings in PDF are either Hex or use a specific CMap.
+         // If they are not hex, they are just a sequence of bytes.
+         // We'll take the next byte too.
+         const nextByte = bytes[i + len] || 0;
+         val = (val << 8) | nextByte;
+         len += 1; 
+      }
+
       chars.push({ start: i, len, value: val });
       i += (len - 1);
     }

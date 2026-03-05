@@ -139,6 +139,9 @@ export const applyRedactions = async (
     alert("An error occurred during redaction. Please check the console for details.");
   } finally {
     setIsRendering(false);
+    if (redactionDebugLog.length > 0) {
+      console.log("[Redactr] Redaction Debug Log:", redactionDebugLog);
+    }
     if (pdfjsDoc) delete (pdfjsDoc as any)._opListCache;
   }
 };

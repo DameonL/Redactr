@@ -13,7 +13,7 @@ export interface RedactionLogEntry {
   rect: PdfRect;
   accepted: boolean;
   reason: string;
-  details?: string;
+  details?: string | undefined;
 }
 
 export type Matrix = [number, number, number, number, number, number];
