@@ -241,6 +241,16 @@ const Redactor = () => {
   const onFileChange = (e: any) => {
     const file = e.currentTarget?.files?.[0];
     if (!file) return;
+
+    // Cancel preview mode before loading new file
+    if (previewMode) {
+      setPreviewMode(false);
+      setPrePreviewBytes(null);
+    }
+    // Clear existing redactions when loading a fresh file
+    setPendingRedactions(new Map());
+    setActionHistory([]);
+
     setFilename(file.name);
     const reader = new FileReader();
     reader.onload = async (event) => {
