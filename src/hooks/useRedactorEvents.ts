@@ -4,6 +4,7 @@ import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { PDFDocument } from 'pdf-lib';
 import { type Rect } from '../utils/geometryUtils.js';
 import { type PdfRect } from '../types/pdf.js';
+import { safeImport } from '../utils/importUtils.js';
 
 interface UseRedactorEventsProps {
   pdfjsDoc: PDFDocumentProxy | null;
@@ -30,12 +31,12 @@ let cachedRenderingUtils: any = null;
 let cachedGeometryUtils: any = null;
 
 async function getRenderingUtils() {
-  if (!cachedRenderingUtils) cachedRenderingUtils = await import('../utils/renderingUtils.js');
+  if (!cachedRenderingUtils) cachedRenderingUtils = await safeImport(() => import('../utils/renderingUtils.js'), 'Rendering Utilities');
   return cachedRenderingUtils;
 }
 
 async function getGeometryUtils() {
-  if (!cachedGeometryUtils) cachedGeometryUtils = await import('../utils/geometryUtils.js');
+  if (!cachedGeometryUtils) cachedGeometryUtils = await safeImport(() => import('../utils/geometryUtils.js'), 'Geometry Utilities');
   return cachedGeometryUtils;
 }
 

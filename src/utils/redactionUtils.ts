@@ -4,10 +4,11 @@ import { type PDFLibModule } from '../redactor.js';
 import { type PdfRect } from '../types/pdf.js';
 import { redactContentStream, redactionDebugLog } from '../pdfStreamRedactor.js';
 import { concatUint8Arrays } from './pdfHelpers.js';
+import { safeImport } from './importUtils.js';
 
 let pakoLib: any = null;
 async function loadPako() {
-  if (!pakoLib) pakoLib = (await import('pako')).default;
+  if (!pakoLib) pakoLib = (await safeImport(() => import('pako'), 'Compression Library')).default;
 }
 
 export const applyRedactions = async (

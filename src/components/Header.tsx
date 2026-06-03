@@ -31,6 +31,7 @@ interface HeaderProps {
   onAutoRedact: (text: string) => void;
   previewMode: boolean;
   onCancelPreview: () => void;
+  hasAppliedRedactions: boolean;
 }
 
 export const Header = ({
@@ -57,7 +58,8 @@ export const Header = ({
   actionHistoryCount,
   onAutoRedact,
   previewMode,
-  onCancelPreview
+  onCancelPreview,
+  hasAppliedRedactions
 }: HeaderProps) => {
   return (
     <div className={styles.header}>
@@ -169,8 +171,9 @@ export const Header = ({
 
         <button
           onClick={handleDownload}
-          disabled={!pdfBytes || isRendering}
+          disabled={!pdfBytes || isRendering || !hasAppliedRedactions || pendingRedactionsCount > 0 || previewMode}
           className={`${styles.buttonBase} ${styles.downloadButton}`}
+          title={!hasAppliedRedactions ? "Apply at least one redaction to export" : (pendingRedactionsCount > 0 || previewMode ? "Confirm pending redactions to export" : "Export redacted PDF")}
         >
           <Icons.Download />
           {isRendering ? '...' : 'Export'}

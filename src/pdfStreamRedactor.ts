@@ -7,12 +7,13 @@ import { encode, resolveName, parsePdfString, concatUint8Arrays, LATIN1 } from '
 import { blackOutImage } from './pdfImageRedactor.js';
 import { getFontMetrics } from './pdfFontHandler.js';
 import type { CustomFontMetrics } from "./pdfFontHandler.js";
+import { safeImport } from './utils/importUtils.js';
 
 export const redactionDebugLog: RedactionLogEntry[] = [];
 
 let pakoLib: any = null;
 async function loadPako() {
-  if (!pakoLib) pakoLib = (await import('pako')).default;
+  if (!pakoLib) pakoLib = (await safeImport(() => import('pako'), 'Compression Library')).default;
 }
 
 export const redactContentStream = async (

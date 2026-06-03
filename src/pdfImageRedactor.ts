@@ -3,10 +3,11 @@ import { type PDFLibModule } from './redactor.js';
 import type { PdfRect, Matrix } from './types/pdf.js';
 import { inverseTransform, unitSquareBounds, rectsOverlap } from './utils/pdfMath.js';
 import { resolveName } from './utils/pdfHelpers.js';
+import { safeImport } from './utils/importUtils.js';
 
 let pakoLib: any = null;
 async function loadPako() {
-  if (!pakoLib) pakoLib = (await import('pako')).default;
+  if (!pakoLib) pakoLib = (await safeImport(() => import('pako'), 'Compression Library')).default;
 }
 
 export const blackOutImage = async (

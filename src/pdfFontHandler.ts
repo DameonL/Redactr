@@ -1,6 +1,7 @@
 import type { PDFDocument, PDFRef, PDFRawStream, PDFDict } from "pdf-lib";
 import { type PDFLibModule } from './redactor.js';
 import { resolveName } from './utils/pdfHelpers.js';
+import { safeImport } from './utils/importUtils.js';
 
 export interface CustomFontMetrics {
   unitsPerEm: number;
@@ -46,9 +47,9 @@ let fontkitLib: any = null;
 let afmLib: any = null;
 
 async function loadDeps() {
-  if (!pakoLib) pakoLib = (await import('pako')).default;
-  if (!fontkitLib) fontkitLib = await import('fontkit');
-  if (!afmLib) afmLib = (await import('afm')).default;
+  if (!pakoLib) pakoLib = (await safeImport(() => import('pako'), 'Compression Library')).default;
+  if (!fontkitLib) fontkitLib = await safeImport(() => import('fontkit'), 'Font Processor');
+  if (!afmLib) afmLib = (await safeImport(() => import('afm'), 'Font Metrics Data')).default;
 }
 
 export async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: PDFDocument, fontRefOrDict: PDFRef | PDFDict, fontName: string): Promise<CustomFontMetrics | null> {

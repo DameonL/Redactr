@@ -17,6 +17,7 @@ import { initPdf } from './utils/pdfInitUtils.js';
 
 // Hooks
 import { useRedactorEvents } from './hooks/useRedactorEvents.js';
+import { safeImport } from './utils/importUtils.js';
 
 export type PDFJSModule = typeof import('pdfjs-dist');
 export type PDFLibModule = typeof import('pdf-lib');
@@ -27,17 +28,23 @@ let cachedRenderingUtils: any = null;
 let cachedDownloadUtils: any = null;
 
 async function getRedactionUtils() {
-  if (!cachedRedactionUtils) cachedRedactionUtils = await import('./utils/redactionUtils.js');
+  if (!cachedRedactionUtils) {
+    cachedRedactionUtils = await safeImport(() => import('./utils/redactionUtils.js'), 'Redaction Utilities');
+  }
   return cachedRedactionUtils;
 }
 
 async function getRenderingUtils() {
-  if (!cachedRenderingUtils) cachedRenderingUtils = await import('./utils/renderingUtils.js');
+  if (!cachedRenderingUtils) {
+    cachedRenderingUtils = await safeImport(() => import('./utils/renderingUtils.js'), 'Rendering Utilities');
+  }
   return cachedRenderingUtils;
 }
 
 async function getDownloadUtils() {
-  if (!cachedDownloadUtils) cachedDownloadUtils = await import('./utils/downloadUtils.js');
+  if (!cachedDownloadUtils) {
+    cachedDownloadUtils = await safeImport(() => import('./utils/downloadUtils.js'), 'Download Utilities');
+  }
   return cachedDownloadUtils;
 }
 
@@ -71,6 +78,7 @@ const Redactor = () => {
   
   const [previewMode, setPreviewMode] = useState(false);
   const [prePreviewBytes, setPrePreviewBytes] = useState<Uint8Array | null>(null);
+  const [hasAppliedRedactions, setHasAppliedRedactions] = useState(false);
 
   const [templates, setTemplates] = useState<RedactionTemplate[]>([]);
   const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
@@ -235,7 +243,7 @@ const Redactor = () => {
     getRedactionUtils();
     getRenderingUtils();
     getDownloadUtils();
-    import('./utils/geometryUtils.js');
+    safeImport(() => import('./utils/geometryUtils.js'), 'Geometry Utilities');
   };
 
   const onFileChange = (e: any) => {
@@ -247,9 +255,14 @@ const Redactor = () => {
       setPreviewMode(false);
       setPrePreviewBytes(null);
     }
-    // Clear existing redactions when loading a fresh file
+    // Clear existing redactions and application state when loading a fresh file
     setPendingRedactions(new Map());
     setActionHistory([]);
+    setHasAppliedRedactions(false);
+    setCurrentPageNum(1);
+    setPdfBytes(null);
+    setPdfjsDoc(null);
+    setPdfDoc(null);
 
     setFilename(file.name);
     const reader = new FileReader();
@@ -257,6 +270,8 @@ const Redactor = () => {
       const buf = event.target?.result;
       if (!buf || typeof buf === "string") return;
       await onInitPdf(new Uint8Array(buf), file.name);
+      // Reset file input value to allow reloading same file
+      if (fileInputRef.current) fileInputRef.current.value = "";
     };
     reader.readAsArrayBuffer(file);
   };
@@ -288,6 +303,7 @@ const Redactor = () => {
           );
           setPreviewMode(false);
           setPrePreviewBytes(null);
+          setHasAppliedRedactions(true);
       }
     } finally {
       stopProcessing();
@@ -400,6 +416,7 @@ const Redactor = () => {
           onAutoRedact={onAutoRedact}
           previewMode={previewMode}
           onCancelPreview={onCancelPreview}
+          hasAppliedRedactions={hasAppliedRedactions}
         />
 
         {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}
