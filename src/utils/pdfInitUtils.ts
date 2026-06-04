@@ -2,6 +2,8 @@ import { type TargetedEvent } from 'preact';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { PDFDocument } from 'pdf-lib';
 import { safeImport } from './importUtils.js';
+// @ts-ignore
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
 export const initPdf = async (
   fileBytes: Uint8Array,
@@ -18,7 +20,7 @@ export const initPdf = async (
     const PDFLib = await safeImport(() => import('pdf-lib'), 'PDF Editing Library');
 
     // @ts-ignore
-    PDFJS.GlobalWorkerOptions.workerSrc = "/pdfWorker.js";
+    PDFJS.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
     const loadedPdfDoc = await PDFLib.PDFDocument.load(new Uint8Array(fileBytes));
     const loadedPdfjsDoc = await PDFJS.getDocument({ data: new Uint8Array(fileBytes) }).promise;

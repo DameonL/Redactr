@@ -49,7 +49,11 @@ let afmLib: any = null;
 async function loadDeps() {
   if (!pakoLib) pakoLib = (await safeImport(() => import('pako'), 'Compression Library')).default;
   if (!fontkitLib) fontkitLib = await safeImport(() => import('fontkit'), 'Font Processor');
-  if (!afmLib) afmLib = (await safeImport(() => import('afm'), 'Font Metrics Data')).default;
+  if (!afmLib) {
+    const imported = await safeImport(() => import('afm'), 'Font Metrics Data');
+    // afm exports { fonts: ... }, but depending on loader it might be under .default
+    afmLib = imported.fonts ? imported : (imported.default?.fonts ? imported.default : imported);
+  }
 }
 
 export async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: PDFDocument, fontRefOrDict: PDFRef | PDFDict, fontName: string): Promise<CustomFontMetrics | null> {
@@ -58,7 +62,7 @@ export async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: PDFDocument, 
 
   await loadDeps();
 
-  const afmFontData = (afmLib.fonts as any)[fontName];
+  const afmFontData = afmLib?.fonts ? afmLib.fonts[fontName] : null;
   if (afmFontData) {
     const afmWrapper = new AfmFontWrapper(afmFontData);
     fontCache.set(refStr, afmWrapper);

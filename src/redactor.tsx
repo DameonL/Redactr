@@ -11,6 +11,7 @@ import { Toolbar } from './components/Toolbar.js';
 import { InfoDialog } from './components/InfoDialog.js';
 import { ShortcutsDialog } from './components/ShortcutsDialog.js';
 import { TemplateManager } from './components/TemplateManager.js';
+import { TextSelectionLayer } from './components/TextSelectionLayer.js';
 
 // Utils
 import { initPdf } from './utils/pdfInitUtils.js';
@@ -65,6 +66,7 @@ const Redactor = () => {
   const [currentPageNum, setCurrentPageNum] = useState<number>(1);
   const [pdfBytes, setPdfBytes] = useState<Uint8Array | null>(null);
   const [isRendering, setIsRendering] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(false);
   const [isSlowProcessing, setIsSlowProcessing] = useState(false);
   const [renderScale, setRenderScale] = useState(1.5);
   const [downloadScale, setDownloadScale] = useState(1.5);
@@ -181,12 +183,14 @@ const Redactor = () => {
   const undoLastRedaction = () => {
     if (actionHistory.length === 0) return;
     const last = actionHistory[actionHistory.length - 1]!;
+    const count = (last as any).count || 1;
+    
     setActionHistory(h => h.slice(0, -1));
     setPendingRedactions(prev => {
       const next = new Map(prev);
       const pagePending = next.get(last.pageNum) || [];
       if (pagePending.length > 0) {
-        const updated = pagePending.slice(0, -1);
+        const updated = pagePending.slice(0, -count);
         if (updated.length === 0) next.delete(last.pageNum);
         else next.set(last.pageNum, updated);
       }
@@ -226,30 +230,35 @@ const Redactor = () => {
   };
 
   const onInitPdf = async (bytes: Uint8Array, fname: string) => {
-    await initPdf(
-      bytes, setPdfDoc, (doc) => {
-        setPdfjsDoc(doc);
-        const matching = findMatchingTemplate(fname);
-        if (matching) {
-          setActiveTemplateId(matching.id);
-          applyTemplate(matching, doc.numPages);
-        } else if (activeTemplateId) {
-          const lastUsed = templates.find(t => t.id === activeTemplateId);
-          if (lastUsed) applyTemplate(lastUsed, doc.numPages);
-        }
-      }, setPdfBytes, setCurrentPageNum, 
-      setShowInfo, setLoadedPdfjsLib, setLoadedPdfLib
-    );
-    getRedactionUtils();
-    getRenderingUtils();
-    getDownloadUtils();
-    safeImport(() => import('./utils/geometryUtils.js'), 'Geometry Utilities');
+    try {
+      await initPdf(
+        bytes, setPdfDoc, (doc) => {
+          setPdfjsDoc(doc);
+          const matching = findMatchingTemplate(fname);
+          if (matching) {
+            setActiveTemplateId(matching.id);
+            applyTemplate(matching, doc.numPages);
+          } else if (activeTemplateId) {
+            const lastUsed = templates.find(t => t.id === activeTemplateId);
+            if (lastUsed) applyTemplate(lastUsed, doc.numPages);
+          }
+        }, setPdfBytes, setCurrentPageNum, 
+        setShowInfo, setLoadedPdfjsLib, setLoadedPdfLib
+      );
+      getRedactionUtils();
+      getRenderingUtils();
+      getDownloadUtils();
+      safeImport(() => import('./utils/geometryUtils.js'), 'Geometry Utilities');
+    } finally {
+      setIsInitializing(false);
+    }
   };
 
   const onFileChange = (e: any) => {
     const file = e.currentTarget?.files?.[0];
     if (!file) return;
 
+    setIsInitializing(true);
     // Cancel preview mode before loading new file
     if (previewMode) {
       setPreviewMode(false);
@@ -359,6 +368,16 @@ const Redactor = () => {
     URL.revokeObjectURL(url);
   };
 
+  const onTextSelected = (rects: PdfRect[]) => {
+    setPendingRedactions(prev => {
+      const next = new Map(prev);
+      const pagePending = next.get(currentPageNum) || [];
+      next.set(currentPageNum, [...pagePending, ...rects]);
+      return next;
+    });
+    setActionHistory(h => [...h, { pageNum: currentPageNum, count: rects.length } as any]);
+  };
+
   const onImportTemplates = (e: any) => {
     const file = e.target.files?.[0]; if (!file) return;
     const reader = new FileReader();
@@ -431,6 +450,13 @@ const Redactor = () => {
 
         <div className={styles.viewerWrapper}>
           <div className={styles.canvasContainer}>
+            {isInitializing && (
+              <div className={styles.loadingOverlay} style={{ zIndex: 100 }}>
+                <div className={styles.spinner} />
+                <div className={styles.loadingText}>Initializing PDF...</div>
+                <div className={styles.loadingSubtext}>Preparing document for redaction</div>
+              </div>
+            )}
             {(!pdfjsDoc || showInfo) ? (
               <InfoDialog pdfjsDoc={pdfjsDoc} setShowInfo={setShowInfo} />
             ) : (
@@ -456,6 +482,16 @@ const Redactor = () => {
                   onMouseLeave={stopDrawing}
                   className={`${styles.canvasElement} ${isRendering ? styles.dimmed : ''}`}
                 />
+                {currentViewport && (
+                  <TextSelectionLayer 
+                    pdfjsDoc={pdfjsDoc}
+                    currentPageNum={currentPageNum}
+                    viewport={currentViewport}
+                    interactionMode={interactionMode}
+                    onTextSelected={onTextSelected}
+                    isDrawing={isDrawing}
+                  />
+                )}
               </div>
             )}
           </div>

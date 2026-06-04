@@ -176,6 +176,7 @@ export const autoRedactText = async (
       const page = await pdfjsDoc.getPage(i);
       const textContent = await page.getTextContent();
       const pageRedactions: PdfRect[] = newRedactionsMap.get(i) || [];
+      let pageFoundCount = 0;
 
       for (const item of textContent.items as any[]) {
         if (!item.str) continue;
@@ -196,17 +197,18 @@ export const autoRedactText = async (
 
           pageRedactions.push({
             rX: matchX,
-            rY: ty,
+            rY: ty - (itemHeight * 0.2), // Cover descenders
             rW: matchWidth,
-            rH: itemHeight
+            rH: itemHeight * 1.2
           });
-          newHistory.push({ pageNum: i });
+          pageFoundCount++;
           foundCount++;
         }
       }
       
-      if (pageRedactions.length > 0) {
+      if (pageFoundCount > 0) {
         newRedactionsMap.set(i, pageRedactions);
+        newHistory.push({ pageNum: i, count: pageFoundCount } as any);
       }
       
       // Periodic yield

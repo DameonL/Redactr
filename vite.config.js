@@ -46,10 +46,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         app: resolve(__dirname, "index.html"),
-        pdfWorker: resolve(__dirname, "node_modules/pdfjs-dist/build/pdf.worker.mjs")
-      },
-      output: {
-        entryFileNames: "[name].js"
       }
     }
   }
