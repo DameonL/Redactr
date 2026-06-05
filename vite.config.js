@@ -11,7 +11,7 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico', 'apple-touch-icon.png'],
       manifest: {
-        name: 'Redactr - Online PDF Redaction',
+        name: 'Redactr - PDF Redaction',
         short_name: 'Redactr',
         description: 'Redact sensitive information from PDFs entirely in your browser.',
         theme_color: '#ffffff',

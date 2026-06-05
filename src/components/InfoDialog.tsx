@@ -37,7 +37,12 @@ export const InfoDialog = ({
         </div>
 
         <div className={styles.infoSection}>
-          <h3><Icons.Check /> 5. How to verify your redactions.</h3>
+          <h3><Icons.WifiOff /> 5. Works offline & installable.</h3>
+          <p>Redactr is a Progressive Web App. Once loaded, it functions entirely on your device without needing an internet connection. You can also "install" it to your home screen or desktop for instant access, ensuring you always have a secure redaction tool ready.</p>
+        </div>
+
+        <div className={styles.infoSection}>
+          <h3><Icons.Check /> 6. How to verify your redactions.</h3>
           <p>We always recommend double-checking your work. After exporting your document, open the new PDF and try to highlight, copy, or search for the text you redacted. For maximum peace of mind, check <strong>Rasterize Output</strong> before exporting, which flattens your entire document into an un-editable, static image.</p>
         </div>
 
