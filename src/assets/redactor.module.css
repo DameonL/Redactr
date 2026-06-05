@@ -148,6 +148,7 @@ body {
     cursor: pointer;
     font-weight: bold;
     transition: background-color 0.2s, opacity 0.2s;
+    user-select: none;
 }
 
 .buttonBase:disabled {
