@@ -76,7 +76,7 @@ export const redactContentStream = async (
 
   while ((opObj = parser.nextOperation()) !== null) {
     opCount++;
-    if (opCount % 1000 === 0) await new Promise(r => setTimeout(r, 0));
+    if (opCount % 5000 === 0) await new Promise(r => setTimeout(r, 0));
 
     try {
       if (opObj.op === 'EOF' || opObj.op === 'INLINE_IMAGE' || opObj.op === 'COMMENT') {

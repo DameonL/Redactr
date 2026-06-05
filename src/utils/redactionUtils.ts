@@ -172,47 +172,51 @@ export const autoRedactText = async (
       ? new RegExp(searchText.slice(1, -1), 'gi') 
       : new RegExp(searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
 
-    for (let i = 1; i <= pdfjsDoc.numPages; i++) {
-      const page = await pdfjsDoc.getPage(i);
-      const textContent = await page.getTextContent();
-      const pageRedactions: PdfRect[] = newRedactionsMap.get(i) || [];
-      let pageFoundCount = 0;
+    const pageIndices = Array.from({ length: pdfjsDoc.numPages }, (_, i) => i + 1);
+    const CHUNK_SIZE = 5;
+    
+    for (let i = 0; i < pageIndices.length; i += CHUNK_SIZE) {
+      const chunk = pageIndices.slice(i, i + CHUNK_SIZE);
+      await Promise.all(chunk.map(async (pageNum) => {
+        const page = await pdfjsDoc.getPage(pageNum);
+        const textContent = await page.getTextContent();
+        const pageRedactions: PdfRect[] = newRedactionsMap.get(pageNum) || [];
+        let pageFoundCount = 0;
 
-      for (const item of textContent.items as any[]) {
-        if (!item.str) continue;
-        
-        let match;
-        while ((match = searchRegex.exec(item.str)) !== null) {
-          const startIdx = match.index;
-          const matchStr = match[0];
+        for (const item of textContent.items as any[]) {
+          if (!item.str) continue;
           
-          const tx = item.transform[4];
-          const ty = item.transform[5];
-          const itemWidth = item.width;
-          const itemHeight = item.height || item.transform[3]; 
-          
-          const charWidth = itemWidth / item.str.length;
-          const matchWidth = charWidth * matchStr.length;
-          const matchX = tx + (charWidth * startIdx);
+          let match;
+          searchRegex.lastIndex = 0; // Reset for each item
+          while ((match = searchRegex.exec(item.str)) !== null) {
+            const startIdx = match.index;
+            const matchStr = match[0];
+            
+            const tx = item.transform[4];
+            const ty = item.transform[5];
+            const itemWidth = item.width;
+            const itemHeight = item.height || item.transform[3]; 
+            
+            const charWidth = itemWidth / item.str.length;
+            const matchWidth = charWidth * matchStr.length;
+            const matchX = tx + (charWidth * startIdx);
 
-          pageRedactions.push({
-            rX: matchX,
-            rY: ty - (itemHeight * 0.2), // Cover descenders
-            rW: matchWidth,
-            rH: itemHeight * 1.2
-          });
-          pageFoundCount++;
-          foundCount++;
+            pageRedactions.push({
+              rX: matchX,
+              rY: ty - (itemHeight * 0.2), // Cover descenders
+              rW: matchWidth,
+              rH: itemHeight * 1.2
+            });
+            pageFoundCount++;
+            foundCount++;
+          }
         }
-      }
-      
-      if (pageFoundCount > 0) {
-        newRedactionsMap.set(i, pageRedactions);
-        newHistory.push({ pageNum: i, count: pageFoundCount } as any);
-      }
-      
-      // Periodic yield
-      if (i % 5 === 0) await new Promise(r => setTimeout(r, 0));
+        
+        if (pageFoundCount > 0) {
+          newRedactionsMap.set(pageNum, pageRedactions);
+          newHistory.push({ pageNum: pageNum, count: pageFoundCount } as any);
+        }
+      }));
     }
 
     if (foundCount > 0) {

@@ -2,6 +2,13 @@ import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { type PdfRect } from '../types/pdf.js';
 import { type Rect } from './geometryUtils.js';
 
+const pageCache = new Map<string, { buffer: HTMLCanvasElement; viewport: any }>();
+const CACHE_LIMIT = 5;
+
+export const clearPageCache = () => {
+  pageCache.clear();
+};
+
 export const renderPdfToBuffer = async (
   pageNum: number,
   pdfjsDocument: PDFDocumentProxy,
@@ -13,6 +20,14 @@ export const renderPdfToBuffer = async (
 ) => {
   if (renderTaskRef.current || !pdfjsDocument) return;
 
+  const cacheKey = `${pageNum}_${renderScale}_${pdfjsDocument.fingerprint || ''}`;
+  if (pageCache.has(cacheKey)) {
+    const cached = pageCache.get(cacheKey)!;
+    pdfBufferRef.current = cached.buffer;
+    onComplete(cached.viewport);
+    return;
+  }
+
   renderTaskRef.current = true;
   setIsRendering(true);
 
@@ -21,11 +36,19 @@ export const renderPdfToBuffer = async (
     const viewport = page.getViewport({ scale: renderScale });
 
     const buffer = document.createElement('canvas');
-    buffer.width = viewport.width;
-    buffer.height = viewport.height;
+    buffer.width = Math.round(viewport.width);
+    buffer.height = Math.round(viewport.height);
     const ctx = buffer.getContext('2d');
     if (ctx) {
       await page.render({ canvas: buffer, canvasContext: ctx, viewport }).promise;
+      
+      // Add to cache
+      if (pageCache.size >= CACHE_LIMIT) {
+        const firstKey = pageCache.keys().next().value;
+        if (firstKey) pageCache.delete(firstKey);
+      }
+      pageCache.set(cacheKey, { buffer, viewport });
+      
       pdfBufferRef.current = buffer;
       onComplete(viewport);
     }
