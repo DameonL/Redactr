@@ -17,33 +17,33 @@ export const InfoDialog = ({
         <h2 className={styles.infoTitle}>How Redactr Protects Your Data</h2>
 
         <div className={styles.infoSection}>
-          <h3><Icons.Shield /> 1. Your data stays entirely on your device.</h3>
-          <p>Redacting sensitive documents can be stressful, so we built this tool to give you absolute certainty. Your PDF is never uploaded to a server, saved to a cloud, or transmitted over the internet. Every calculation happens locally inside your web browser.</p>
+          <h3><Icons.Shield /> Local Processing</h3>
+          <p>Your PDF is never uploaded or transmitted. All redaction happens entirely in your browser for total privacy.</p>
         </div>
 
         <div className={styles.infoSection}>
-          <h3><Icons.WifiOff /> 2. Works offline & installable.</h3>
-          <p>Redactr is a Progressive Web App. Once loaded, it functions entirely on your device without needing an internet connection. You can also "install" it to your home screen or desktop for instant access, ensuring you always have a secure redaction tool ready.</p>
+          <h3><Icons.WifiOff /> Offline & Installable</h3>
+          <p>This app works entirely offline once loaded. Install it to your device for instant, secure access anytime.</p>
         </div>
 
         <div className={styles.infoSection}>
-          <h3><Icons.Eye /> 3. True text removal, not just a black box.</h3>
-          <p>Simply drawing a black square over text isn't secure because anyone can copy the text underneath it. When you draw a redaction box here, this tool digs into the PDF's structural code, scrubs the underlying text characters, and then draws the black box.</p>
+          <h3><Icons.Eye /> True Text Removal</h3>
+          <p>We don't just hide text—we scrub the underlying characters from the PDF's code so they can never be recovered.</p>
         </div>
 
         <div className={styles.infoSection}>
-          <h3><Icons.Image /> 4. Pixel-level image redaction.</h3>
-          <p>If your selection covers part of a photo, scanned document, or logo, we don't just hide it. The tool permanently alters the underlying image data, converting the selected area into pure black pixels. The original visual data is destroyed and cannot be recovered.</p>
+          <h3><Icons.Image /> Image Redaction</h3>
+          <p>Redacted image areas are permanently converted to black pixels, destroying the original visual data at the source.</p>
         </div>
 
         <div className={styles.infoSection}>
-          <h3><Icons.Tag /> 5. Automatic metadata removal.</h3>
-          <p>PDFs often contain hidden metadata, including author names, creation dates, and editing history. Redactr automatically strips this sensitive hidden data from your document when you export it.</p>
+          <h3><Icons.Tag /> Metadata Stripping</h3>
+          <p>Hidden metadata like author names and edit history is automatically removed during export for extra security.</p>
         </div>
 
         <div className={styles.infoSection}>
-          <h3><Icons.Check /> 6. How to verify your redactions.</h3>
-          <p>We always recommend double-checking your work. After exporting your document, open the new PDF and try to highlight, copy, or search for the text you redacted. For maximum peace of mind, check <strong>Rasterize Output</strong> before exporting, which flattens your entire document into an un-editable, static image.</p>
+          <h3><Icons.Check /> Verification</h3>
+          <p>Verify by searching or highlighting text in the exported PDF. Use <strong>Rasterize Output</strong> to flatten the document into a static image.</p>
         </div>
 
         <div className={styles.infoActions}>
