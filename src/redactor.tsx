@@ -68,7 +68,7 @@ const Redactor = () => {
   const [isRendering, setIsRendering] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
   const [isSlowProcessing, setIsSlowProcessing] = useState(false);
-  const [renderScale, setRenderScale] = useState(1.5);
+  const [renderScale, setRenderScale] = useState(window.innerWidth < 768 ? window.innerWidth / 800 : 1.5);
   const [downloadScale, setDownloadScale] = useState(1.5);
   const [rasterizeOutput, setRasterizeOutput] = useState(false);
   const [loadedPdfjsLib, setLoadedPdfjsLib] = useState<PDFJSModule | null>(null);
@@ -460,7 +460,33 @@ const Redactor = () => {
             {(!pdfjsDoc || showInfo) ? (
               <InfoDialog pdfjsDoc={pdfjsDoc} setShowInfo={setShowInfo} />
             ) : (
-              <div style={{ position: 'relative' }}>
+              <div 
+                style={{ 
+                  position: 'relative', 
+                  margin: '0 auto',
+                  touchAction: interactionMode === 'redact' ? 'none' : 'auto' 
+                }}
+                onTouchStart={(e) => {
+                  if (interactionMode === 'pan') return;
+                  if (e.cancelable) e.preventDefault();
+                  const touch = e.touches[0];
+                  startDrawing({ clientX: touch.clientX, clientY: touch.clientY } as any);
+                }}
+                onTouchMove={(e) => {
+                  if (interactionMode === 'pan') return;
+                  if (e.cancelable) e.preventDefault();
+                  const touch = e.touches[0];
+                  draw({ clientX: touch.clientX, clientY: touch.clientY } as any);
+                }}
+                onTouchEnd={(e) => {
+                  if (interactionMode === 'pan') return;
+                  stopDrawing();
+                }}
+                onTouchCancel={(e) => {
+                  if (interactionMode === 'pan') return;
+                  stopDrawing();
+                }}
+              >
                 {isRendering && (
                   <div className={styles.loadingOverlay}>
                     <div className={styles.spinner} />

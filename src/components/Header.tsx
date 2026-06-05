@@ -81,7 +81,7 @@ export const Header = ({
           <button
             onClick={() => setShowShortcuts(!showShortcuts)}
             disabled={isRendering}
-            className={styles.buttonBase}
+            className={`${styles.buttonBase} ${styles.desktopOnly}`}
             style={{ background: 'transparent', color: 'var(--text-color)', padding: '8px', border: '1px solid var(--border-color)' }}
             title="Keyboard Shortcuts"
           >
@@ -122,31 +122,47 @@ export const Header = ({
           onCancelPreview={onCancelPreview}
         />
 
-        <div className={styles.toolbarDivider} />
+        {pdfjsDoc && (
+          <>
+            <div className={styles.toolbarDivider} />
 
-        {/* Global Settings */}
-        <label className={styles.checkboxLabel} style={isRendering ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
-          <input 
-            type="checkbox" 
-            checked={rasterizeOutput} 
-            onChange={e => setRasterizeOutput((e.currentTarget as HTMLInputElement).checked)} 
-            disabled={isRendering}
-          />
-          Rasterize
-        </label>
+            {/* Global Settings */}
+            <label className={styles.checkboxLabel} style={isRendering ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
+              <input 
+                type="checkbox" 
+                checked={rasterizeOutput} 
+                onChange={e => setRasterizeOutput((e.currentTarget as HTMLInputElement).checked)} 
+                disabled={isRendering}
+              />
+              Rasterize
+            </label>
 
-        {rasterizeOutput && (
-          <select
-            value={downloadScale}
-            onChange={e => setDownloadScale(Number(e.currentTarget.value))}
-            className={styles.selectInput}
-            disabled={isRendering}
-          >
-            <option value="1">1x</option>
-            <option value="1.5">1.5x</option>
-            <option value="2">2x</option>
-            <option value="3">3x</option>
-          </select>
+            {rasterizeOutput && (
+              <select
+                value={downloadScale}
+                onChange={e => setDownloadScale(Number(e.currentTarget.value))}
+                className={styles.selectInput}
+                disabled={isRendering}
+              >
+                <option value="1">1x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+                <option value="3">3x</option>
+              </select>
+            )}
+
+            <div className={styles.toolbarDivider} />
+
+            <button
+              onClick={handleDownload}
+              disabled={!pdfBytes || isRendering || !hasAppliedRedactions || pendingRedactionsCount > 0 || previewMode}
+              className={`${styles.buttonBase} ${styles.downloadButton}`}
+              title={!hasAppliedRedactions ? "Apply at least one redaction to export" : (pendingRedactionsCount > 0 || previewMode ? "Confirm pending redactions to export" : "Export redacted PDF")}
+            >
+              <Icons.Download />
+              {isRendering ? '...' : 'Export'}
+            </button>
+          </>
         )}
 
         <div className={styles.toolbarDivider} />
@@ -168,16 +184,6 @@ export const Header = ({
         >
           Select File
         </label>
-
-        <button
-          onClick={handleDownload}
-          disabled={!pdfBytes || isRendering || !hasAppliedRedactions || pendingRedactionsCount > 0 || previewMode}
-          className={`${styles.buttonBase} ${styles.downloadButton}`}
-          title={!hasAppliedRedactions ? "Apply at least one redaction to export" : (pendingRedactionsCount > 0 || previewMode ? "Confirm pending redactions to export" : "Export redacted PDF")}
-        >
-          <Icons.Download />
-          {isRendering ? '...' : 'Export'}
-        </button>
       </div>
     </div>
   );
