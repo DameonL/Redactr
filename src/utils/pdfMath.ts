@@ -6,18 +6,14 @@ export const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
  * Standard affine matrix multiplication for [a b c d e f] format.
  * This implementation represents RowVector * A * B
  */
-export const matMul = (A: Matrix, B: Matrix): Matrix => {
-  const a0 = A[0], a1 = A[1], a2 = A[2], a3 = A[3], a4 = A[4], a5 = A[5];
-  const b0 = B[0], b1 = B[1], b2 = B[2], b3 = B[3], b4 = B[4], b5 = B[5];
-  return [
-    a0 * b0 + a1 * b2,        // a
-    a0 * b1 + a1 * b3,        // b
-    a2 * b0 + a3 * b2,        // c
-    a2 * b1 + a3 * b3,        // d
-    a4 * b0 + a5 * b2 + b4, // e
-    a4 * b1 + a5 * b3 + b5, // f
-  ];
-};
+export const matMul = (A: Matrix, B: Matrix): Matrix => [
+  A[0] * B[0] + A[1] * B[2],        // a
+  A[0] * B[1] + A[1] * B[3],        // b
+  A[2] * B[0] + A[3] * B[2],        // c
+  A[2] * B[1] + A[3] * B[3],        // d
+  A[4] * B[0] + A[5] * B[2] + B[4], // e
+  A[4] * B[1] + A[5] * B[3] + B[5], // f
+];
 
 export const transform = (m: Matrix, x: number, y: number): { x: number, y: number } => ({
   x: m[0] * x + m[2] * y + m[4],

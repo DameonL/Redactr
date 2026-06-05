@@ -273,8 +273,6 @@ const Redactor = () => {
     setPdfjsDoc(null);
     setPdfDoc(null);
 
-    getRenderingUtils().then(utils => utils.clearPageCache());
-
     setFilename(file.name);
     const reader = new FileReader();
     reader.onload = async (event) => {
@@ -316,8 +314,6 @@ const Redactor = () => {
           setPrePreviewBytes(null);
           setHasAppliedRedactions(true);
       }
-      const renderUtils = await getRenderingUtils();
-      renderUtils.clearPageCache();
     } finally {
       stopProcessing();
     }

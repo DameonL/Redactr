@@ -22,18 +22,14 @@ export const TextSelectionLayer = ({
 }: TextSelectionLayerProps) => {
   const [textItems, setTextItems] = useState<any[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
-  const textContentCache = useRef<Map<number, any>>(new Map());
-
-  // Clear cache if pdfjsDoc changes
-  useEffect(() => {
-    textContentCache.current.clear();
-  }, [pdfjsDoc]);
 
   useEffect(() => {
     if (!pdfjsDoc || !viewport) return;
     let isMounted = true;
 
-    const processContent = (textContent: any) => {
+    pdfjsDoc.getPage(currentPageNum).then(page => {
+      return page.getTextContent();
+    }).then(textContent => {
       if (!isMounted) return;
       
       const measureCanvas = document.createElement('canvas');
@@ -85,20 +81,9 @@ export const TextSelectionLayer = ({
           };
         });
       setTextItems(items);
-    };
-
-    if (textContentCache.current.has(currentPageNum)) {
-      processContent(textContentCache.current.get(currentPageNum));
-    } else {
-      pdfjsDoc.getPage(currentPageNum).then(page => {
-        return page.getTextContent();
-      }).then(textContent => {
-        textContentCache.current.set(currentPageNum, textContent);
-        processContent(textContent);
-      }).catch(err => {
-        console.error("Error fetching text content:", err);
-      });
-    }
+    }).catch(err => {
+      console.error("Error fetching text content:", err);
+    });
 
     return () => { isMounted = false; };
   }, [pdfjsDoc, currentPageNum, viewport, interactionMode, isDrawing]);
