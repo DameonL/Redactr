@@ -22,23 +22,23 @@ export const InfoDialog = ({
         </div>
 
         <div className={styles.infoSection}>
-          <h3><Icons.Eye /> 2. True text removal, not just a black box.</h3>
+          <h3><Icons.WifiOff /> 2. Works offline & installable.</h3>
+          <p>Redactr is a Progressive Web App. Once loaded, it functions entirely on your device without needing an internet connection. You can also "install" it to your home screen or desktop for instant access, ensuring you always have a secure redaction tool ready.</p>
+        </div>
+
+        <div className={styles.infoSection}>
+          <h3><Icons.Eye /> 3. True text removal, not just a black box.</h3>
           <p>Simply drawing a black square over text isn't secure because anyone can copy the text underneath it. When you draw a redaction box here, this tool digs into the PDF's structural code, scrubs the underlying text characters, and then draws the black box.</p>
         </div>
 
         <div className={styles.infoSection}>
-          <h3><Icons.Image /> 3. Pixel-level image redaction.</h3>
+          <h3><Icons.Image /> 4. Pixel-level image redaction.</h3>
           <p>If your selection covers part of a photo, scanned document, or logo, we don't just hide it. The tool permanently alters the underlying image data, converting the selected area into pure black pixels. The original visual data is destroyed and cannot be recovered.</p>
         </div>
 
         <div className={styles.infoSection}>
-          <h3><Icons.Tag /> 4. Automatic metadata removal.</h3>
+          <h3><Icons.Tag /> 5. Automatic metadata removal.</h3>
           <p>PDFs often contain hidden metadata, including author names, creation dates, and editing history. Redactr automatically strips this sensitive hidden data from your document when you export it.</p>
-        </div>
-
-        <div className={styles.infoSection}>
-          <h3><Icons.WifiOff /> 5. Works offline & installable.</h3>
-          <p>Redactr is a Progressive Web App. Once loaded, it functions entirely on your device without needing an internet connection. You can also "install" it to your home screen or desktop for instant access, ensuring you always have a secure redaction tool ready.</p>
         </div>
 
         <div className={styles.infoSection}>
