@@ -1,6 +1,6 @@
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { PDFDocument, PDFRef, PDFDict } from 'pdf-lib';
-import { type PDFLibModule } from '../redactor.js';
+import type { PDFLibModule } from '../redactor.js';
 import { type PdfRect } from '../types/pdf.js';
 import { redactContentStream, redactionDebugLog } from '../pdfStreamRedactor.js';
 import { concatUint8Arrays } from './pdfHelpers.js';

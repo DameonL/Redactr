@@ -1,14 +1,9 @@
 import type { PDFDocument, PDFArray, PDFRef, PDFRawStream } from "pdf-lib";
-import { type PDFLibModule } from './redactor.js';
+import type { PDFLibModule } from './redactor.js';
 import type { PdfRect, Matrix } from './types/pdf.js';
 import { inverseTransform, unitSquareBounds, rectsOverlap } from './utils/pdfMath.js';
 import { resolveName } from './utils/pdfHelpers.js';
-import { safeImport } from './utils/importUtils.js';
-
-let pakoLib: any = null;
-async function loadPako() {
-  if (!pakoLib) pakoLib = (await safeImport(() => import('pako'), 'Compression Library')).default;
-}
+import { loadPako } from './utils/streamCodec.js';
 
 export const blackOutImage = async (
   PDFLib: PDFLibModule, 
@@ -54,8 +49,7 @@ export const blackOutImage = async (
     let bytes = stream.contents;
     if (isFlate) {
       try {
-        await loadPako();
-        bytes = pakoLib.inflate(bytes);
+        bytes = (await loadPako()).inflate(bytes);
       } catch { return { surgical: false, info: "Inflation failed" }; }
     }
 

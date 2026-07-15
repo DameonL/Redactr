@@ -1,7 +1,8 @@
 import type { PDFDocument, PDFRef, PDFRawStream, PDFDict } from "pdf-lib";
-import { type PDFLibModule } from './redactor.js';
+import type { PDFLibModule } from './redactor.js';
 import { resolveName } from './utils/pdfHelpers.js';
 import { safeImport } from './utils/importUtils.js';
+import { decodeStreamContents } from './utils/streamCodec.js';
 
 export interface CustomFontMetrics {
   unitsPerEm: number;
@@ -43,12 +44,10 @@ class AfmFontWrapper implements CustomFontMetrics {
 const fontCaches = new WeakMap<object, Map<string, CustomFontMetrics | null>>();
 
 // Lazy-loaded dependencies
-let pakoLib: any = null;
 let fontkitLib: any = null;
 let afmLib: any = null;
 
 async function loadDeps() {
-  if (!pakoLib) pakoLib = (await safeImport(() => import('pako'), 'Compression Library')).default;
   if (!fontkitLib) fontkitLib = await safeImport(() => import('fontkit'), 'Font Processor');
   if (!afmLib) {
     const imported = await safeImport(() => import('afm'), 'Font Metrics Data');
@@ -180,14 +179,11 @@ export async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: PDFDocument, 
     }
 
     const fontStream = pdfDoc.context.lookup(fontStreamRef, PDFLib.PDFStream) as PDFRawStream;
-    let fontBytes: Uint8Array = fontStream.contents;
-
-    if (fontStream.dict.has(PDFLib.PDFName.of('Filter')) && fontStream.dict.get(PDFLib.PDFName.of('Filter')) === PDFLib.PDFName.of('FlateDecode')) {
-      try { fontBytes = pakoLib.inflate(fontBytes); } catch (e) {
-        console.warn(`Could not inflate font stream for ${fontName}:`, e);
-        fontCache.set(refStr, null);
-        return null;
-      }
+    const fontBytes = await decodeStreamContents(PDFLib, fontStream);
+    if (!fontBytes) {
+      console.warn(`Could not inflate font stream for ${fontName}`);
+      fontCache.set(refStr, null);
+      return null;
     }
 
     const fkFont = fontkitLib.create(fontBytes as any) as any;

@@ -3,18 +3,18 @@ import type { PDFLibModule } from './redactor.js';
 import type { PDFDocument, PDFArray, PDFDict, PDFRef, PDFRawStream, PDFNumber } from "pdf-lib";
 import type { PdfRect, RedactionLogEntry, Matrix } from './types/pdf.js';
 import { matMul, unitSquareBounds, rectsOverlap } from './utils/pdfMath.js';
-import { encode, resolveName, parsePdfString, concatUint8Arrays, LATIN1 } from './utils/pdfHelpers.js';
+import { encode, resolveName, concatUint8Arrays, LATIN1 } from './utils/pdfHelpers.js';
 import { blackOutImage } from './pdfImageRedactor.js';
 import { getFontMetrics } from './pdfFontHandler.js';
-import type { CustomFontMetrics } from "./pdfFontHandler.js";
-import { safeImport } from './utils/importUtils.js';
+import { decodeStreamContents, setStreamContentsFlate } from './utils/streamCodec.js';
+import {
+  type GraphicsState, createInitialState, cloneState, restoreState, applyStateOperator,
+} from './redaction/graphicsState.js';
+import { redactTextShow } from './redaction/textShowRedactor.js';
 
 export const redactionDebugLog: RedactionLogEntry[] = [];
 
-let pakoLib: any = null;
-async function loadPako() {
-  if (!pakoLib) pakoLib = (await safeImport(() => import('pako'), 'Compression Library')).default;
-}
+const isTextShowOp = (op: string): boolean => op === 'Tj' || op === 'TJ' || op === "'" || op === '"';
 
 export const redactContentStream = async (
   PDFLib: PDFLibModule,
@@ -32,43 +32,54 @@ export const redactContentStream = async (
   const stream = pdfDoc.context.lookup(streamRef, PDFLib.PDFStream) as PDFRawStream;
   if (!stream) return;
 
-  let bytes = stream.contents;
-  const filter = stream.dict.lookup(PDFLib.PDFName.of('Filter'));
-  const isFlate = filter === PDFLib.PDFName.of('FlateDecode') || (filter instanceof PDFLib.PDFArray && filter.asArray().some(f => f === PDFLib.PDFName.of('FlateDecode')));
-  if (isFlate) {
-    try { 
-      await loadPako();
-      bytes = pakoLib.inflate(bytes); 
-    } catch { return; }
-  }
+  const bytes = await decodeStreamContents(PDFLib, stream);
+  if (!bytes) return;
 
   const resources = stream.dict.lookupMaybe(PDFLib.PDFName.of('Resources'), PDFLib.PDFDict) ?? resourcesDict;
   const xObjects = resources?.lookupMaybe(PDFLib.PDFName.of('XObject'), PDFLib.PDFDict);
   const fontsDict = resources?.lookupMaybe(PDFLib.PDFName.of('Font'), PDFLib.PDFDict);
 
   const output: Uint8Array[] = [];
-  let gStack: Array<{ 
-    ctm: Matrix; 
-    tr: number; 
-    charSpacing: number; 
-    wordSpacing: number; 
-    horizontalScaling: number; 
-    fontSize: number; 
-    leading: number;
-    textRise: number;
-    currentFont: CustomFontMetrics | null 
-  }> = [];
-  let ctm: Matrix = [...initialCtm];
-  let tm: Matrix = [1, 0, 0, 1, 0, 0];
-  let tlm: Matrix = [1, 0, 0, 1, 0, 0];
-  let fontSize = 10;
-  let charSpacing = 0;
-  let wordSpacing = 0;
-  let horizontalScaling = 100;
-  let leading = 0;
-  let textRise = 0;
-  let currentTr = 0;
-  let currentFont: CustomFontMetrics | null = null;
+  const emit = (b: Uint8Array) => { output.push(b); output.push(encode('\n')); };
+
+  let state = createInitialState(initialCtm);
+  const savedStates: GraphicsState[] = [];
+
+  // Tf: resolve font metrics from the resource dict (async, so not part of
+  // the pure state reducer).
+  const applyFontOperator = async (opObj: PdfOperation): Promise<void> => {
+    const sizeArg = opObj.args.find(a => typeof a === 'number');
+    const nameArg = opObj.args.find(a => typeof a === 'object' && a.type === 'name');
+    if (sizeArg !== undefined) state.fontSize = sizeArg;
+    state.font = null;
+    if (fontsDict && nameArg) {
+      const fontName = nameArg.value.substring(1);
+      const fontObj = fontsDict.get(PDFLib.PDFName.of(fontName));
+      if (fontObj) state.font = await getFontMetrics(PDFLib, pdfDoc, fontObj as any, fontName);
+    }
+  };
+
+  // Do: black out overlapping images; recurse into form XObjects.
+  const handleXObject = async (opObj: PdfOperation): Promise<void> => {
+    const nameArg = opObj.args.find(a => typeof a === 'object' && a.type === 'name');
+    const name = nameArg ? nameArg.value.substring(1) : "";
+    const ref = xObjects?.get(PDFLib.PDFName.of(name));
+    if (!(ref instanceof PDFLib.PDFRef)) return;
+
+    const xStream = pdfDoc.context.lookup(ref, PDFLib.PDFStream) as PDFRawStream;
+    const subtype = resolveName(xStream?.dict.lookup(PDFLib.PDFName.of('Subtype')));
+    if (subtype === 'Image') {
+      const bounds = unitSquareBounds(state.ctm);
+      if (pdfRects.some(r => rectsOverlap(bounds, r))) {
+        await blackOutImage(PDFLib, pdfDoc, ref, state.ctm, pdfRects, pdfjsDoc, pageNum, name);
+      }
+    } else if (subtype === 'Form') {
+      const formMat = xStream.dict.lookupMaybe(PDFLib.PDFName.of('Matrix'), PDFLib.PDFArray);
+      let nextCtm = state.ctm;
+      if (formMat) nextCtm = matMul((formMat as PDFArray).asArray().map((v: any) => (v as PDFNumber).asNumber()) as Matrix, state.ctm);
+      await redactContentStream(PDFLib, pdfDoc, ref, pdfRects, resources, nextCtm, pdfjsDoc, pageNum, depth + 1);
+    }
+  };
 
   const parser = new PDFStreamParser(bytes);
   let opObj: PdfOperation | null;
@@ -79,267 +90,44 @@ export const redactContentStream = async (
     if (opCount % 1000 === 0) await new Promise(r => setTimeout(r, 0));
 
     try {
-      if (opObj.op === 'EOF' || opObj.op === 'INLINE_IMAGE' || opObj.op === 'COMMENT') {
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
+      const op = opObj.op;
+      if (op === 'EOF' || op === 'INLINE_IMAGE' || op === 'COMMENT') {
+        emit(opObj.rawOutput);
         continue;
       }
-
-      const op = opObj.op;
       const numArgs = opObj.args.filter((a): a is number => typeof a === 'number');
 
       if (op === 'q') {
-        gStack.push({ 
-          ctm: [...ctm], tr: currentTr, charSpacing, wordSpacing, horizontalScaling,
-          fontSize, leading, textRise, currentFont
-        });
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
-      }
-      else if (op === 'Q') {
-        const s = gStack.pop() || { 
-          ctm: [...initialCtm], tr: 0, charSpacing: 0, wordSpacing: 0, horizontalScaling: 100,
-          fontSize: 10, leading: 0, textRise: 0, currentFont: null
-        };
-        ctm = s.ctm; currentTr = s.tr; charSpacing = s.charSpacing; wordSpacing = s.wordSpacing;
-        horizontalScaling = s.horizontalScaling; fontSize = s.fontSize; leading = s.leading;
-        textRise = s.textRise; currentFont = s.currentFont;
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
-      }
-      else if (op === 'cm' && numArgs.length >= 6) {
-        ctm = matMul(numArgs.slice(-6) as any, ctm);
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
-      }
-      else if (op === 'BT') {
-        tm = [1, 0, 0, 1, 0, 0];
-        tlm = [1, 0, 0, 1, 0, 0];
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
-      }
-      else if (op === 'Tm' && numArgs.length >= 6) {
-        tm = numArgs.slice(-6) as any;
-        tlm = [...tm];
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
-      }
-      else if (op === 'Tr' && numArgs.length >= 1) {
-        currentTr = numArgs[numArgs.length - 1]!;
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
-      }
-      else if (op === 'Tc' && numArgs.length >= 1) {
-        charSpacing = numArgs[numArgs.length - 1]!;
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
-      }
-      else if (op === 'Tw' && numArgs.length >= 1) {
-        wordSpacing = numArgs[numArgs.length - 1]!;
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
-      }
-      else if (op === 'Tz' && numArgs.length >= 1) {
-        horizontalScaling = numArgs[numArgs.length - 1]!;
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
-      }
-      else if (op === 'TL' && numArgs.length >= 1) {
-        leading = numArgs[numArgs.length - 1]!;
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
-      }
-      else if (op === 'Ts' && numArgs.length >= 1) {
-        textRise = numArgs[numArgs.length - 1]!;
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
-      }
-      else if ((op === 'Td' || op === 'TD') && numArgs.length >= 2) {
-        const a = numArgs.slice(-2);
-        tlm = matMul([1, 0, 0, 1, a[0] as number, a[1] as number], tlm);
-        tm = [...tlm];
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
-      }
-      else if (op === 'T*') {
-        tlm = matMul([1, 0, 0, 1, 0, -leading], tlm);
-        tm = [...tlm];
-        output.push(encode("T*\n"));
-      }
-      else if (op === 'Tf') {
-        const sizeArg = opObj.args.find(a => typeof a === 'number');
-        const nameArg = opObj.args.find(a => typeof a === 'object' && a.type === 'name');
-        if (sizeArg !== undefined) fontSize = sizeArg;
-        currentFont = null;
-        if (fontsDict && nameArg) {
-          const fontName = nameArg.value.substring(1);
-          const fontObj = fontsDict.get(PDFLib.PDFName.of(fontName));
-          if (fontObj) currentFont = await getFontMetrics(PDFLib, pdfDoc, fontObj as any, fontName);
-        }
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
-      }
-      else if (op === 'Do') {
-        const nameArg = opObj.args.find(a => typeof a === 'object' && a.type === 'name');
-        const name = nameArg ? nameArg.value.substring(1) : "";
-        const ref = xObjects?.get(PDFLib.PDFName.of(name));
-        if (ref instanceof PDFLib.PDFRef) {
-          const xStream = pdfDoc.context.lookup(ref, PDFLib.PDFStream) as PDFRawStream;
-          const subtype = resolveName(xStream?.dict.lookup(PDFLib.PDFName.of('Subtype')));
-          const bounds = unitSquareBounds(ctm);
-          const overlapsAny = pdfRects.some(r => rectsOverlap(bounds, r));
-          if (subtype === 'Image' && overlapsAny) {
-            await blackOutImage(PDFLib, pdfDoc, ref, ctm, pdfRects, pdfjsDoc, pageNum, name);
-          } else if (subtype === 'Form') {
-            const formMat = xStream.dict.lookupMaybe(PDFLib.PDFName.of('Matrix'), PDFLib.PDFArray);
-            let nextCtm = ctm;
-            if (formMat) nextCtm = matMul((formMat as PDFArray).asArray().map((v: any) => (v as PDFNumber).asNumber()) as any, ctm);
-            await redactContentStream(PDFLib, pdfDoc, ref, pdfRects, resources, nextCtm, pdfjsDoc, pageNum, depth + 1);
-          }
-        }
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
-      }
-      else if (op === 'Tj' || op === 'TJ' || op === "'" || op === '"') {
-        if (op === '"' && numArgs.length >= 2) {
-          wordSpacing = numArgs[0]!;
-          charSpacing = numArgs[1]!;
-        }
-        if (op === "'" || op === '"') {
-          // ' and " move to the next line (T*) before showing text
-          tlm = matMul([1, 0, 0, 1, 0, -leading], tlm);
-          tm = [...tlm];
-        }
-
-        let localTm = [...tm] as Matrix;
-        const newTjItems: Uint8Array[] = [];
-        let pendingBytes: Uint8Array[] = [];
-        let wasRedacted = false;
-        let isCurrentHex = false;
-
-        const flushText = () => {
-          if (pendingBytes.length > 0) {
-            const content = concatUint8Arrays(pendingBytes);
-            if (isCurrentHex) newTjItems.push(concatUint8Arrays([encode('<'), content, encode('>')]));
-            else newTjItems.push(concatUint8Arrays([encode('('), content, encode(')')]));
-            pendingBytes = [];
-          }
-        };
-
-        const processString = (strBytes: Uint8Array) => {
-          const isHex = strBytes[0] === 0x3C;
-          if (pendingBytes.length > 0 && isCurrentHex !== isHex) flushText();
-          isCurrentHex = isHex;
-          const isMultiByte = currentFont?.isMultiByte || false;
-          const chars = parsePdfString(strBytes, isMultiByte);
-
-          for (const char of chars) {
-            const th = horizontalScaling / 100;
-            const tw = (!isMultiByte && char.value === 32) ? wordSpacing : 0;
-            let w0 = 600;
-            let glyphBBox: { minX: number; minY: number; maxX: number; maxY: number } | undefined;
-            if (currentFont) {
-              const glyph = currentFont.getGlyph(char.value);
-              w0 = glyph.advanceWidth; glyphBBox = glyph.bbox;
-            }
-
-            // Displacement in points (user space)
-            const tx_points = ((w0 / 1000) * fontSize + charSpacing + tw) * th;
-
-            // Trm = [Tfs*Th 0 0 Tfs 0 Ts*Tfs] * Tm * CTM
-            // Left-multiplication by Scale ensures Tm's translation is NOT double-scaled.
-            const trm = matMul(
-              [fontSize * th, 0, 0, fontSize, 0, textRise * fontSize],
-              matMul(localTm, ctm)
-            );
-
-            let bbox;
-            if (glyphBBox) {
-              const p1 = matMul([1, 0, 0, 1, glyphBBox.minX / 1000, glyphBBox.minY / 1000], trm);
-              const p2 = matMul([1, 0, 0, 1, glyphBBox.maxX / 1000, glyphBBox.maxY / 1000], trm);
-              bbox = { xMin: Math.min(p1[4], p2[4]), xMax: Math.max(p1[4], p2[4]), yMin: Math.min(p1[5], p2[5]), yMax: Math.max(p1[5], p2[5]) };
-            } else {
-              const curX = trm[4], curY = trm[5];
-              const scaleX = Math.sqrt(trm[0] * trm[0] + trm[1] * trm[1]);
-              const scaleY = Math.sqrt(trm[2] * trm[2] + trm[3] * trm[3]);
-              const actualAdvance = (w0 / 1000) * scaleX;
-              const ascent = currentFont ? (currentFont.ascent / 1000) * scaleY : 0.9 * scaleY;
-              const descent = currentFont ? (currentFont.descent / 1000) * scaleY : -0.3 * scaleY;
-              bbox = { xMin: Math.min(curX, curX + actualAdvance), xMax: Math.max(curX, curX + actualAdvance), yMin: curY + Math.min(ascent, descent), yMax: curY + Math.max(ascent, descent) };
-            }
-
-            if (pdfRects.some(r => rectsOverlap(bbox, r))) {
-              flushText();
-              // kern = - (tx_points / (fontSize * th)) * 1000
-              const kern = - (tx_points / (fontSize * th)) * 1000;
-              newTjItems.push(encode(kern.toFixed(3)));
-              wasRedacted = true;
-            } else {
-              pendingBytes.push(strBytes.slice(char.start, char.start + char.len));
-            }
-            localTm = matMul(localTm, [1, 0, 0, 1, tx_points, 0]);
-          }
-        };
-
-        if (op === 'TJ') {
-          const tjItems = opObj.args.find(a => typeof a === 'object' && a.type === 'array');
-          if (tjItems) {
-            const tjParser = new PDFStreamParser(tjItems.rawBytes.slice(1, -1));
-            const itemOp = tjParser.nextOperation();
-            if (itemOp) {
-              for (const arg of itemOp.args) {
-                if (typeof arg === 'number') {
-                  flushText(); newTjItems.push(encode(arg.toString()));
-                  const tx_tj = - (arg / 1000) * fontSize * (horizontalScaling / 100);
-                  localTm = matMul(localTm, [1, 0, 0, 1, tx_tj, 0]);
-                } else if (typeof arg === 'object' && (arg.type === 'string' || arg.type === 'hexstring')) {
-                  processString(arg.rawBytes);
-                }
-              }
-            }
-          }
-        } else {
-          const strArg = opObj.args.find(a => typeof a === 'object' && (a.type === 'string' || a.type === 'hexstring'));
-          if (strArg) processString(strArg.rawBytes);
-        }
-
-        flushText();
-        if (wasRedacted) {
-          // ' and " are replaced by a TJ array, so their side effects
-          // (setting Tw/Tc, moving to the next line) must be emitted explicitly.
-          if (op === '"') output.push(encode(`${wordSpacing} Tw ${charSpacing} Tc\n`));
-          if (op === "'" || op === '"') output.push(encode('T*\n'));
-          if (newTjItems.length > 0) {
-            output.push(encode('['));
-            for (let i = 0; i < newTjItems.length; i++) {
-              output.push(newTjItems[i]!); if (i < newTjItems.length - 1) output.push(encode(' '));
-            }
-            output.push(encode('] TJ\n'));
-          }
-        } else {
-          output.push(opObj.rawOutput);
-          output.push(encode('\n'));
-        }
-        tm = localTm;
+        savedStates.push(cloneState(state));
+        emit(opObj.rawOutput);
+      } else if (op === 'Q') {
+        state = restoreState(state, savedStates.pop() ?? createInitialState(initialCtm));
+        emit(opObj.rawOutput);
+      } else if (op === 'Tf') {
+        await applyFontOperator(opObj);
+        emit(opObj.rawOutput);
+      } else if (op === 'Do') {
+        await handleXObject(opObj);
+        emit(opObj.rawOutput);
+      } else if (isTextShowOp(op)) {
+        const rewritten = redactTextShow(op, opObj, state, pdfRects);
+        if (rewritten) output.push(rewritten);
+        else emit(opObj.rawOutput);
         if (pdfRects.length > 0) {
-          const debugText = LATIN1.decode(opObj.rawOutput);
-          redactionDebugLog.push({ text: debugText, op, curX: tm[4], curY: tm[5], rect: { ...pdfRects[0]! }, accepted: wasRedacted, reason: wasRedacted ? `Redacted` : `Skipped` });
+          redactionDebugLog.push({
+            text: LATIN1.decode(opObj.rawOutput), op, curX: state.tm[4], curY: state.tm[5],
+            rect: { ...pdfRects[0]! }, accepted: !!rewritten, reason: rewritten ? `Redacted` : `Skipped`,
+          });
         }
       } else {
-        output.push(opObj.rawOutput);
-        output.push(encode('\n'));
+        applyStateOperator(state, op, numArgs);
+        emit(opObj.rawOutput);
       }
     } catch (e) {
       console.error("Operator processing error:", e);
-      output.push(opObj.rawOutput);
-      output.push(encode('\n'));
+      emit(opObj.rawOutput);
     }
   }
 
-  const result = concatUint8Arrays(output);
-  await loadPako();
-  const compressed = pakoLib.deflate(result);
-  (stream as any).contents = compressed;
-  stream.dict.set(PDFLib.PDFName.of('Filter'), PDFLib.PDFName.of('FlateDecode'));
-  stream.dict.set(PDFLib.PDFName.of('Length'), PDFLib.PDFNumber.of(compressed.length));
+  await setStreamContentsFlate(PDFLib, stream, concatUint8Arrays(output));
 };
