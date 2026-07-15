@@ -19,7 +19,7 @@ A free, browser-based PDF redaction tool. Everything runs client-side — docume
 Prerequisites: [Node.js](https://nodejs.org) 20.19+ (or 22.12+) and npm.
 
 ```bash
-git clone <this repository>
+git clone https://github.com/DameonL/Redactr.git
 cd Redactr
 npm install
 npm run dev
