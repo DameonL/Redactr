@@ -39,7 +39,8 @@ class AfmFontWrapper implements CustomFontMetrics {
   }
 }
 
-const fontCache = new Map<string, CustomFontMetrics | null>();
+// Cached per document: refs like "5 0 R" are only unique within a single PDF.
+const fontCaches = new WeakMap<object, Map<string, CustomFontMetrics | null>>();
 
 // Lazy-loaded dependencies
 let pakoLib: any = null;
@@ -58,20 +59,27 @@ async function loadDeps() {
 
 export async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: PDFDocument, fontRefOrDict: PDFRef | PDFDict, fontName: string): Promise<CustomFontMetrics | null> {
   const refStr = typeof fontRefOrDict.toString === 'function' ? fontRefOrDict.toString() : fontName;
+  let fontCache = fontCaches.get(pdfDoc);
+  if (!fontCache) { fontCache = new Map(); fontCaches.set(pdfDoc, fontCache); }
   if (fontCache.has(refStr)) return fontCache.get(refStr) || null;
 
   await loadDeps();
 
-  const afmFontData = afmLib?.fonts ? afmLib.fonts[fontName] : null;
-  if (afmFontData) {
-    const afmWrapper = new AfmFontWrapper(afmFontData);
-    fontCache.set(refStr, afmWrapper);
-    return afmWrapper;
-  }
-
   try {
     const fontDict = fontRefOrDict instanceof PDFLib.PDFRef ? pdfDoc.context.lookup(fontRefOrDict, PDFLib.PDFDict) : fontRefOrDict;
-    if (!fontDict) return null;
+
+    // Built-in (AFM) metrics, keyed by BaseFont minus any subset prefix, with the
+    // resource name as a fallback. Only used where the PDF supplies no /Widths.
+    let afmWrapper: AfmFontWrapper | null = null;
+    if (afmLib?.fonts) {
+      const baseFont = fontDict ? resolveName(fontDict.get(PDFLib.PDFName.of('BaseFont'))).replace(/^[A-Z]{6}\+/, '') : '';
+      const afmFontData = (baseFont && afmLib.fonts[baseFont]) || afmLib.fonts[fontName] || null;
+      if (afmFontData) afmWrapper = new AfmFontWrapper(afmFontData);
+    }
+    if (!fontDict) {
+      fontCache.set(refStr, afmWrapper);
+      return afmWrapper;
+    }
 
     const subtype = resolveName(fontDict.get(PDFLib.PDFName.of('Subtype')));
     const isMultiByte = subtype === 'Type0';
@@ -161,10 +169,11 @@ export async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: PDFDocument, 
         ascent,
         descent,
         isMultiByte,
-        getGlyph: (codePoint: number) => ({ 
-          advanceWidth: widthsMap.has(codePoint) ? widthsMap.get(codePoint)! : defaultWidth, 
-          bbox: undefined 
-        })
+        getGlyph: (codePoint: number) => {
+          if (widthsMap.has(codePoint)) return { advanceWidth: widthsMap.get(codePoint)!, bbox: undefined };
+          if (afmWrapper) return afmWrapper.getGlyph(codePoint);
+          return { advanceWidth: defaultWidth, bbox: undefined };
+        }
       };
       fontCache.set(refStr, fontWrapper);
       return fontWrapper;
@@ -207,8 +216,9 @@ export async function getFontMetrics(PDFLib: PDFLibModule, pdfDoc: PDFDocument, 
         }
 
         const glyph = fkFont.glyphForCodePoint(codePoint);
-        return { 
-          advanceWidth: glyph ? (glyph.advanceWidth / fkFont.unitsPerEm) * 1000 : defaultWidth,
+        return {
+          advanceWidth: glyph ? (glyph.advanceWidth / fkFont.unitsPerEm) * 1000
+            : (afmWrapper ? afmWrapper.getGlyph(codePoint).advanceWidth : defaultWidth),
           bbox: glyph ? { 
             minX: (glyph.bbox.minX / fkFont.unitsPerEm) * 1000, 
             minY: (glyph.bbox.minY / fkFont.unitsPerEm) * 1000, 

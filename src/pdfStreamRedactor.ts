@@ -161,11 +161,10 @@ export const redactContentStream = async (
         output.push(opObj.rawOutput);
         output.push(encode('\n'));
       }
-      else if (op === 'T*' || op === "'") {
+      else if (op === 'T*') {
         tlm = matMul([1, 0, 0, 1, 0, -leading], tlm);
         tm = [...tlm];
-        output.push(op === "'" ? opObj.rawOutput : encode("T*\n"));
-        output.push(encode('\n'));
+        output.push(encode("T*\n"));
       }
       else if (op === 'Tf') {
         const sizeArg = opObj.args.find(a => typeof a === 'number');
@@ -202,16 +201,21 @@ export const redactContentStream = async (
         output.push(encode('\n'));
       }
       else if (op === 'Tj' || op === 'TJ' || op === "'" || op === '"') {
+        if (op === '"' && numArgs.length >= 2) {
+          wordSpacing = numArgs[0]!;
+          charSpacing = numArgs[1]!;
+        }
+        if (op === "'" || op === '"') {
+          // ' and " move to the next line (T*) before showing text
+          tlm = matMul([1, 0, 0, 1, 0, -leading], tlm);
+          tm = [...tlm];
+        }
+
         let localTm = [...tm] as Matrix;
         const newTjItems: Uint8Array[] = [];
         let pendingBytes: Uint8Array[] = [];
         let wasRedacted = false;
         let isCurrentHex = false;
-
-        if (op === '"' && numArgs.length >= 2) {
-          wordSpacing = numArgs[0]!;
-          charSpacing = numArgs[1]!;
-        }
 
         const flushText = () => {
           if (pendingBytes.length > 0) {
@@ -240,7 +244,7 @@ export const redactContentStream = async (
             }
 
             // Displacement in points (user space)
-            const tx_points = ((w0 / 1000) * th + charSpacing + tw) * fontSize;
+            const tx_points = ((w0 / 1000) * fontSize + charSpacing + tw) * th;
 
             // Trm = [Tfs*Th 0 0 Tfs 0 Ts*Tfs] * Tm * CTM
             // Left-multiplication by Scale ensures Tm's translation is NOT double-scaled.
@@ -301,6 +305,10 @@ export const redactContentStream = async (
 
         flushText();
         if (wasRedacted) {
+          // ' and " are replaced by a TJ array, so their side effects
+          // (setting Tw/Tc, moving to the next line) must be emitted explicitly.
+          if (op === '"') output.push(encode(`${wordSpacing} Tw ${charSpacing} Tc\n`));
+          if (op === "'" || op === '"') output.push(encode('T*\n'));
           if (newTjItems.length > 0) {
             output.push(encode('['));
             for (let i = 0; i < newTjItems.length; i++) {
