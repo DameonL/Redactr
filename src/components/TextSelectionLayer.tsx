@@ -28,10 +28,12 @@ export const TextSelectionLayer = ({
     let isMounted = true;
 
     pdfjsDoc.getPage(currentPageNum).then(page => {
-      return page.getTextContent();
-    }).then(textContent => {
+      // Wait for the page's embedded fonts (registered by the renderer) so
+      // canvas measurements below use the real glyph metrics.
+      return Promise.all([page.getTextContent(), document.fonts?.ready]);
+    }).then(([textContent]) => {
       if (!isMounted) return;
-      
+
       const measureCanvas = document.createElement('canvas');
       const measureCtx = measureCanvas.getContext('2d');
 
@@ -41,23 +43,37 @@ export const TextSelectionLayer = ({
           const tx = item.transform[4];
           const ty = item.transform[5];
           const pdfHeight = item.height || item.transform[3] || 10;
-          
+
           const [vx, vy] = viewport.convertToViewportPoint(tx, ty + pdfHeight);
-          
+
           const vw = item.width * viewport.scale;
           const vh = pdfHeight * viewport.scale;
 
+          // item.fontName is the FontFace pdfjs loaded from the embedded font;
+          // styles[fontName].fontFamily is only its generic fallback.
+          const fallbackFamily = (textContent as any).styles?.[item.fontName]?.fontFamily || 'sans-serif';
+          const fontFamily = item.fontName ? `"${item.fontName}", ${fallbackFamily}` : fallbackFamily;
+
           let scaleX = 1;
+          let charOffsets: number[] | undefined;
           if (measureCtx) {
-            measureCtx.font = `${vh}px sans-serif`;
-            const metrics = measureCtx.measureText(item.str);
-            if (metrics.width > 0) {
-              scaleX = vw / metrics.width;
+            measureCtx.font = `${vh}px ${fontFamily}`;
+            const totalWidth = measureCtx.measureText(item.str).width;
+            if (totalWidth > 0) {
+              scaleX = vw / totalWidth;
+              // Cumulative per-character x offsets in PDF units, normalized so
+              // the measured total matches the item's exact PDF width.
+              charOffsets = [0];
+              for (let i = 1; i <= item.str.length; i++) {
+                charOffsets.push((measureCtx.measureText(item.str.slice(0, i)).width / totalWidth) * item.width);
+              }
             }
           }
 
           return {
             str: item.str,
+            charOffsets,
+            fontFamily,
             pdfX: tx,
             pdfY: ty,
             pdfWidth: item.width,
@@ -74,7 +90,7 @@ export const TextSelectionLayer = ({
               pointerEvents: (interactionMode === 'redact' && !isDrawing) ? 'auto' : 'none',
               whiteSpace: 'pre',
               transformOrigin: '0 0',
-              fontFamily: 'sans-serif',
+              fontFamily,
               userSelect: (interactionMode === 'redact' && !isDrawing) ? 'text' : 'none',
               transform: `scaleX(${scaleX})`,
             }
@@ -110,16 +126,29 @@ export const TextSelectionLayer = ({
         const str = span.getAttribute('data-str')!;
 
         if (str.length === 0) return;
+
+        // Per-character cumulative offsets measured with the item's real font;
+        // fall back to uniform widths if they are unavailable.
+        let offsets: number[] | null = null;
+        const offsetsAttr = span.getAttribute('data-char-offsets');
+        if (offsetsAttr) {
+          try {
+            const parsed = JSON.parse(offsetsAttr);
+            if (Array.isArray(parsed) && parsed.length === str.length + 1) offsets = parsed;
+          } catch { /* fall back to uniform widths */ }
+        }
         const charWidth = pdfWidth / str.length;
 
         for (let i = startOffset; i < endOffset; i++) {
           // Skip if it's just whitespace to keep redactions clean
           if (str[i] && str[i].trim() === '') continue;
 
+          const x0 = offsets ? offsets[i]! : i * charWidth;
+          const x1 = offsets ? offsets[i + 1]! : (i + 1) * charWidth;
           rects.push({
-            rX: pdfX + (i * charWidth),
+            rX: pdfX + x0,
             rY: pdfY,
-            rW: charWidth,
+            rW: x1 - x0,
             rH: pdfHeight
           });
         }
@@ -193,6 +222,7 @@ export const TextSelectionLayer = ({
           data-pdf-width={item.pdfWidth}
           data-pdf-height={item.pdfHeight}
           data-str={item.str}
+          data-char-offsets={item.charOffsets ? JSON.stringify(item.charOffsets.map((v: number) => Math.round(v * 1000) / 1000)) : undefined}
         >
           {item.str}
         </span>
